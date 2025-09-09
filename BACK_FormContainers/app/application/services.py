@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+import os
+from datetime import datetime, timezone
+from typing import List, Optional, Dict
+from uuid import UUID
+
+from app.domain.entities import Answer
+from app.application.exceptions import DomainError
+from app.domain.repositories import AnswerRepository, SubmissionRepository, QuestionRepository, UserPK
+from app.application.commands import CreateAnswerCommand, UpdateAnswerCommand, UNSET
+from app.domain.ports import FileStorage
+from app.domain import rules
+
+
+__all__ = ["AnswerService"]
+
+
+class AnswerService:
+    """
+    Casos de uso de Answer (CRUD y orquestación de archivo único).
+    - Desacoplado del ORM (usa repositorio).
+    - La validación de invariantes principales vive en la entidad `Answer`.
+    - El almacenamiento de archivos se realiza mediante el puerto `FileStorage`.
+    """
+
+    def __init__(self, *, repo: AnswerRepository, storage: FileStorage) -> None:
+        self.repo = repo
+        self.storage = storage
+
+    # -------------------- Commands -------------------- #
+
+    def create_answer(self, cmd: CreateAnswerCommand) -> Answer:
+        """
+        Crea una respuesta básica. Si `upload` viene definido, se persiste el archivo
+        y se guarda la ruta lógica en `answer_file_path`.
+        """
+        file_path = None
+        if cmd.upload:
+            file_path = self._store_upload(cmd.upload)
+
+        entity = Answer.create_new(
+            submission_id=cmd.submission_id,
+            question_id=cmd.question_id,
+            user_id=cmd.user_id,
+            answer_text=_norm_text(cmd.answer_text),
+            answer_choice_id=cmd.answer_choice_id,
+            answer_file_path=file_path,
+            ocr_meta=cmd.ocr_meta or {},
+            meta=cmd.meta or {},
+        )
+        return self.repo.save(entity)
+
+    def update_answer(self, cmd: UpdateAnswerCommand) -> Answer:
+        """
+        Actualiza parcial una respuesta:
+        - UNSET → no tocar
+        - None  → limpiar
+        - valor → asignar
+        Si reemplaza archivo y `delete_old_file_on_replace` es True,
+        intenta borrar el archivo anterior mediante `FileStorage`.
+        """
+        entity = self.repo.get(cmd.id)
+        if not entity:
+            raise DomainError(f"Answer {cmd.id} no encontrada.")
+
+        # Texto
+        if cmd.answer_text is not UNSET:
+            entity.update_text(_norm_text(cmd.answer_text))
+
+        # Choice
+        if cmd.answer_choice_id is not UNSET:
+            entity.update_choice(cmd.answer_choice_id)
+
+        # Archivo
+        if cmd.upload is not UNSET:
+            old_path = entity.answer_file_path
+            if cmd.upload is None:
+                # Limpieza explícita
+                entity.update_file_path(None)
+            else:
+                new_path = self._store_upload(cmd.upload)
+                entity.update_file_path(new_path)
+                if old_path and cmd.delete_old_file_on_replace:
+                    # Best-effort: si falla, no interrumpimos el flujo
+                    self.storage.delete(path=old_path)
+
+        # Metadatos
+        if cmd.ocr_meta is not UNSET:
+            entity.set_ocr_meta(cmd.ocr_meta or {})
+        if cmd.meta is not UNSET:
+            entity.set_meta(cmd.meta or {})
+
+        return self.repo.save(entity)
+
+    def delete_answer(self, id: UUID) -> None:
+        """
+        Elimina la respuesta. La implementación del repositorio/modelo
+        se encarga de borrar el archivo físico si existe.
+        """
+        self.repo.delete(id)
+
+    # -------------------- Queries -------------------- #
+
+    def get_answer(self, id: UUID) -> Optional[Answer]:
+        return self.repo.get(id)
+
+    def list_by_user(self, user_id: UserPK, *, limit: Optional[int] = None) -> List[Answer]:
+        return self.repo.list_by_user(user_id, limit=limit)
+
+    def list_by_submission(self, submission_id: UUID) -> List[Answer]:
+        return self.repo.list_by_submission(submission_id)
+
+    def list_by_question(self, question_id: UUID) -> List[Answer]:
+        return self.repo.list_by_question(question_id)
+
+    # -------------------- Helpers -------------------- #
+
+    def _store_upload(self, upload) -> str:
+        """
+        Persiste el archivo mediante el puerto de storage y devuelve el path relativo.
+        Carpeta: uploads/YYYY/MM/DD/
+        """
+        today = datetime.now(timezone.utc)
+        folder = os.path.join("uploads", f"{today.year:04d}", f"{today.month:02d}", f"{today.day:02d}")
+        return self.storage.save(folder=folder, file_obj=upload)
+
+
+def _norm_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    t = value.strip()
+    return t if t else None
+
+class SubmissionService:
+    """
+    Casos de uso de Submission.
+    - Finalizar una submission (marca finalizado/fecha_cierre).
+    - Derivar placa desde respuestas si no está seteada.
+    """
+
+    def __init__(self, *, submission_repo: SubmissionRepository, answer_repo: AnswerRepository, question_repo: QuestionRepository) -> None:
+        self.submission_repo = submission_repo
+        self.answer_repo = answer_repo
+        self.question_repo = question_repo
+
+    def finalize_submission(self, submission_id: UUID) -> dict:
+        """
+        Marca la submission como finalizada. Si no hay placa en la submission,
+        intenta derivarla a partir de respuestas (prioriza preguntas con tag 'placa').
+        Retorna un dict con los campos actualizados.
+        """
+        sub = self.submission_repo.get(submission_id)
+        if not sub:
+            raise DomainError("Submission no encontrada.")
+
+        updates = {
+            "finalizado": True,
+            "fecha_cierre": datetime.now(timezone.utc),
+        }
+
+        # Solo derivar placa si está vacía en la submission
+        current_plate = getattr(sub, "placa_vehiculo", None)
+        if not current_plate:
+            derived = self._derive_plate_from_answers(submission_id)
+            if derived:
+                updates["placa_vehiculo"] = derived
+
+        self.submission_repo.save_partial_updates(submission_id, **updates)
+        return updates
+
+    # -------------------- internos -------------------- #
+    def _derive_plate_from_answers(self, submission_id: UUID) -> Optional[str]:
+        """
+        Busca en respuestas de texto de la submission, priorizando aquellas
+        cuya pregunta tiene semantic_tag == 'placa'. Si no encuentra, intenta
+        con cualquier texto. Usa rules.normalizar_placa.
+        """
+        answers = self.answer_repo.list_by_submission(submission_id)  # ordenadas por timestamp (infra)
+        if not answers:
+            return None
+
+        # Recorremos de más reciente a más antigua
+        def _iter_latest_first(items: List) -> List:
+            return list(reversed(items))
+
+        # 1) Respuestas de preguntas con tag 'placa'
+        for a in _iter_latest_first(answers):
+            if not getattr(a, "answer_text", None):
+                continue
+            q = self.question_repo.get(a.question_id)
+            if not q:
+                continue
+            if (getattr(q, "semantic_tag", "") or "").lower() != "placa":
+                continue
+            norm = rules.normalizar_placa(a.answer_text or "")
+            if norm and norm != "NO_DETECTADA":
+                return norm
+
+        # 2) Fallback: cualquier respuesta de texto
+        for a in _iter_latest_first(answers):
+            if not getattr(a, "answer_text", None):
+                continue
+            norm = rules.normalizar_placa(a.answer_text or "")
+            if norm and norm != "NO_DETECTADA":
+                return norm
+
+        return None
+    
+    def get_detail(self, submission_id: UUID) -> dict:
+        """
+        Devuelve los detalles de una submission con todas sus respuestas,
+        incluyendo las preguntas rehidratadas correctamente.
+        """
+        submission = self.submission_repo.get(submission_id)
+        if not submission:
+            raise DomainError("Submission no encontrada.")
+
+        answers = self.answer_repo.list_by_submission(submission_id)
+        q_ids = list({a.question_id for a in answers})
+        question_map = {q.id: q for q in self.question_repo.get_by_ids(q_ids)}
+
+        for ans in answers:
+            ans.question = question_map.get(ans.question_id)
+
+        return {
+            "submission": submission,
+            "answers": answers,
+        }
+
+class HistoryService:
+    """
+    Orquesta el historial por regulador_id:
+    - Obtiene últimas Fase1/Fase2 (aggregate del repositorio).
+    - Deriva placa si no está en la submission (prioriza F2 → F1 → respuestas).
+    - Devuelve items listos para serializar.
+    """
+
+    def __init__(self, *, submission_repo: SubmissionRepository, answer_repo: AnswerRepository, question_repo: QuestionRepository):
+        self.submission_repo = submission_repo
+        self.answer_repo = answer_repo
+        self.question_repo = question_repo
+
+    def list_history(self, *, fecha_desde=None, fecha_hasta=None, solo_completados: bool = False) -> list[Dict]:
+        rows = self.submission_repo.history_aggregate(fecha_desde=fecha_desde, fecha_hasta=fecha_hasta)
+        f1_ids = [row["fase1_id"] for row in rows if row["fase1_id"]]
+        f2_ids = [row["fase2_id"] for row in rows if row["fase2_id"]]
+        sub_map = self.submission_repo.get_by_ids(f1_ids + f2_ids)
+
+        items = []
+        for row in rows:
+            f1 = sub_map.get(str(row["fase1_id"]))
+            f2 = sub_map.get(str(row["fase2_id"]))
+            if solo_completados and (not f1 or not f2):
+                continue
+
+            # Placa: F2 → F1 → derivar de respuestas
+            placa = (getattr(f2, "placa_vehiculo", None) if f2 else None) or (getattr(f1, "placa_vehiculo", None) if f1 else None)
+            if not placa:
+                source = f2 or f1
+                if source:
+                    placa = self._derive_plate_from_answers(source.id)
+
+            item = {
+                "regulador_id": row["regulador_id"],
+                "placa_vehiculo": placa or None,
+                "contenedor": (getattr(f2, "contenedor", None) if f2 else None) or (getattr(f1, "contenedor", None) if f1 else None),
+                "ultima_fecha_cierre": row["ultima_fecha_cierre"],
+                "fase1": f1,
+                "fase2": f2,
+            }
+            items.append(item)
+
+        return items
+
+    # ---- internals ----
+    def _derive_plate_from_answers(self, submission_id) -> str | None:
+        answers = self.answer_repo.list_by_submission(submission_id)
+        if not answers:
+            return None
+
+        # Recorremos de más reciente a más antigua
+        for a in reversed(answers):
+            if not getattr(a, "answer_text", None):
+                continue
+            q = self.question_repo.get(a.question_id)
+            if q and (getattr(q, "semantic_tag", "") or "").lower() == "placa":
+                norm = rules.normalizar_placa(a.answer_text or "")
+                if norm and norm != "NO_DETECTADA":
+                    return norm
+
+        # Fallback: cualquier texto
+        for a in reversed(answers):
+            if not getattr(a, "answer_text", None):
+                continue
+            norm = rules.normalizar_placa(a.answer_text or "")
+            if norm and norm != "NO_DETECTADA":
+                return norm
+
+        return None

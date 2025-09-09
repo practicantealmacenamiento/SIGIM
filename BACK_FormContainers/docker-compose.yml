@@ -1,0 +1,37 @@
+services:
+  redis:
+    container_name: redis
+    image: redis:7.0.11-alpine
+
+  django:
+    container_name: django
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/usr/src/app/
+    ports:
+      - 8000:8000
+    environment:
+      - DEBUG=True
+      - SECRET_KEY=django-insecure-!(9as6+!2_7s2e-!+o+l%+u4-onvlb#l#poj$=ei37z_bekpm*'
+      - ALLOWED_HOSTS=localhost,127.0.0.1
+      - DJANGO_SETTINGS_MODULE=core.settings
+    depends_on:
+      - redis
+
+  celery:
+    container_name: celery
+    build:
+      context: .
+    command: ["celery", "-A", "core", "worker", "--loglevel=info"]
+    volumes:
+      - .:/usr/src/app/
+    environment:
+      - DEBUG=True
+      - SECRET_KEY=django-insecure-!(9as6+!2_7s2e-!+o+l%+u4-onvlb#l#poj$=ei37z_bekpm*'
+      - ALLOWED_HOSTS=localhost,127.0.0.1
+      - DJANGO_SETTINGS_MODULE=core.settings
+    depends_on:
+      - redis
