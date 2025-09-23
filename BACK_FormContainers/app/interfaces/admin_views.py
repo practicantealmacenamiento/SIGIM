@@ -12,8 +12,6 @@ from django.contrib.auth import logout as django_logout
 from django.db import transaction, IntegrityError
 from django.conf import settings
 from django.middleware.csrf import get_token
-from django.views.decorators.cache import never_cache
-from django.utils.decorators import method_decorator
 
 from rest_framework import mixins, viewsets, status, serializers
 from rest_framework.decorators import action
@@ -23,8 +21,9 @@ from rest_framework.views import APIView
 from rest_framework.authtoken.models import Token
 
 # Tu capa de infraestructura / dominio
+from app.interfaces.entity_serializers import DomainQuestionnaireSerializer
+from app.infrastructure.factories import get_service_factory
 from app.infrastructure.repositories import DjangoQuestionnaireRepository
-from app.infrastructure.serializers import DomainQuestionnaireSerializer
 from app.domain.entities import Questionnaire as DQn, Question as DQ, Choice as DC
 
 
@@ -69,7 +68,44 @@ def _to_domain_questionnaire(d: dict) -> DQn:
         questions=questions,
     )
 
+class AdminLogoutAPIView(APIView):
+    """
+    Cierra la sesión de servidor (sessionid) y limpia cookies de UI.
+    No es un endpoint sensible: si no hay sesión, responde ok igual.
+    """
+    authentication_classes = [BearerOrTokenAuthentication, SessionAuthentication]
+    permission_classes = [AllowAny]
 
+    def post(self, request):
+        # cierra sesión de servidor si existía
+        try:
+            django_logout(request)
+        except Exception:
+            pass
+
+        resp = Response({"ok": True}, status=status.HTTP_200_OK)
+
+        # borra cookies comunes (ajusta domain/secure según tu settings)
+        cookie_domain = getattr(settings, "SESSION_COOKIE_DOMAIN", None)
+        cookie_secure = getattr(settings, "SESSION_COOKIE_SECURE", False)
+        cookie_samesite = getattr(settings, "SESSION_COOKIE_SAMESITE", "Lax")
+
+        resp.delete_cookie("sessionid", path="/", domain=cookie_domain, samesite=cookie_samesite)
+        resp.delete_cookie("auth_token", path="/", domain=cookie_domain, samesite=cookie_samesite)
+        resp.set_cookie("is_staff", "0", path="/", domain=cookie_domain, samesite=cookie_samesite, secure=cookie_secure)
+
+        # refresca CSRF para siguientes formularios anónimos (opcional)
+        csrf_name = getattr(settings, "CSRF_COOKIE_NAME", "csrftoken")
+        resp.set_cookie(
+            key=csrf_name,
+            value=get_token(request),
+            httponly=False,
+            samesite=getattr(settings, "CSRF_COOKIE_SAMESITE", "Lax"),
+            secure=getattr(settings, "CSRF_COOKIE_SECURE", False),
+            domain=cookie_domain,
+            path="/",
+        )
+        return resp
 # ============================
 # ADMIN QUESTIONNAIRES
 # ============================
@@ -86,7 +122,7 @@ class AdminQuestionnaireViewSet(viewsets.ViewSet):
     - DELETE /api/admin/questionnaires/{id}/
     """
     # Token primero, luego sesión (evita 403 cuando sí llega Authorization)
-    authentication_classes = [BearerOrTokenAuthentication]
+    authentication_classes = [BearerOrTokenAuthentication, SessionAuthentication]
     permission_classes = [IsAdminUser]
 
     # LIST
@@ -248,9 +284,15 @@ class AdminQuestionnaireViewSet(viewsets.ViewSet):
 
     # DELETE
     def destroy(self, request, pk=None):
-        from app.infrastructure.models import Questionnaire as QnModel
-        deleted, _ = QnModel.objects.filter(id=pk).delete()
-        return Response({"deleted": bool(deleted)}, status=status.HTTP_200_OK)
+        # Use service layer instead of direct model access
+        factory = get_service_factory()
+        # Get the questionnaire repository through the factory
+        questionnaire_repo = factory._get_questionnaire_repository()
+        try:
+            deleted = questionnaire_repo.delete(UUID(pk))
+        except Exception:
+            deleted = False
+        return Response({"deleted": deleted}, status=status.HTTP_200_OK)
 
 
 # ============================
@@ -293,9 +335,13 @@ class AdminUserViewSet(mixins.ListModelMixin,
                        viewsets.GenericViewSet):
     queryset = UserModel.objects.all().order_by("username")
     serializer_class = AdminUserSerializer
-    authentication_classes = [BearerOrTokenAuthentication]
+    authentication_classes = [BearerOrTokenAuthentication, SessionAuthentication]
     permission_classes = [IsAdminUser]
 
+
+# ============================
+# LOGIN ADMIN (sesión + token DRF) + WHOAMI de diagnóstico
+# ============================
 
 class AdminLoginAPIView(APIView):
     """
@@ -325,57 +371,81 @@ class AdminLoginAPIView(APIView):
         if not user:
             return Response({"detail": "Credenciales inválidas."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Crea sesión
         login(request, user)
 
-        # 🔒 ROTAR TOKEN: elimina tokens previos y crea uno nuevo (NO get_or_create)
-        Token.objects.filter(user=user).delete()
-        token = Token.objects.create(user=user)
+        # Token DRF
+        token, _ = Token.objects.get_or_create(user=user)
 
-        # ... el resto de tu respuesta/cookies exactamente como lo tienes ...
+        # Respuesta + CSRF cookie
         resp = Response({
             "token": token.key,
             "user": {
                 "id": user.id,
                 "username": user.get_username(),
-                "email": getattr(user, "email", ""),
-                "is_staff": getattr(user, "is_staff", False),
-                "is_superuser": getattr(user, "is_superuser", False),
+                "email": user.email,
+                "is_staff": user.is_staff,
+                "is_superuser": user.is_superuser,
             }
         }, status=status.HTTP_200_OK)
 
+        # Emite CSRF cookie (para SPA con SessionAuth)
         csrf_name = getattr(settings, "CSRF_COOKIE_NAME", "csrftoken")
-        cookie_domain = getattr(settings, "SESSION_COOKIE_DOMAIN", None)
-        cookie_samesite = getattr(settings, "SESSION_COOKIE_SAMESITE", "Lax")
-        cookie_secure = getattr(settings, "SESSION_COOKIE_SECURE", False)
+        csrf_val = get_token(request)
+        resp.set_cookie(
+            key=csrf_name,
+            value=csrf_val,
+            httponly=False,
+            samesite=getattr(settings, "CSRF_COOKIE_SAMESITE", "Lax"),
+            secure=getattr(settings, "CSRF_COOKIE_SECURE", False),
+            domain=getattr(settings, "SESSION_COOKIE_DOMAIN", None),
+            path="/",
+        )
 
-        resp.set_cookie(csrf_name, get_token(request), httponly=False, samesite=cookie_samesite,
-                        secure=cookie_secure, domain=cookie_domain, path="/")
-        resp.set_cookie("is_staff", "1" if user.is_staff else "0", httponly=False, samesite=cookie_samesite,
-                        secure=cookie_secure, domain=cookie_domain, path="/")
-        resp.set_cookie("auth_username", user.get_username() or "", httponly=False, samesite=cookie_samesite,
-                        secure=cookie_secure, domain=cookie_domain, path="/")
-        resp.set_cookie("auth_token", token.key, httponly=False, samesite=cookie_samesite,
-                        secure=cookie_secure, domain=cookie_domain, path="/")
+        resp.set_cookie(
+            key="is_staff",
+            value="1" if user.is_staff else "0",
+            httponly=False,
+            samesite=getattr(settings, "SESSION_COOKIE_SAMESITE", "Lax"),
+            secure=getattr(settings, "SESSION_COOKIE_SECURE", False),
+            domain=getattr(settings, "SESSION_COOKIE_DOMAIN", None),
+            path="/",
+        )
+        resp.set_cookie(
+            key="auth_username",
+            value=user.get_username() or "",
+            httponly=False,
+            samesite=getattr(settings, "SESSION_COOKIE_SAMESITE", "Lax"),
+            secure=getattr(settings, "SESSION_COOKIE_SECURE", False),
+            domain=getattr(settings, "SESSION_COOKIE_DOMAIN", None),
+            path="/",
+        )
+        # (Opcional) dejar el token accesible a JS para que el primer whoami
+        # tenga Authorization incluso si LS aún no fue escrito:
+        resp.set_cookie(
+            key="auth_token",
+            value=token.key,
+            httponly=False,
+            samesite=getattr(settings, "SESSION_COOKIE_SAMESITE", "Lax"),
+            secure=getattr(settings, "SESSION_COOKIE_SECURE", False),
+            domain=getattr(settings, "SESSION_COOKIE_DOMAIN", None),
+            path="/",
+        )
+
         return resp
 
 
-@method_decorator(never_cache, name="dispatch")
 class AdminWhoAmI(APIView):
     """
-    Siempre 200. No-cache para evitar respuestas viejas en SSR/proxys.
+    Responde SIEMPRE 200. Nunca redirige.
     """
     authentication_classes = [SessionAuthentication, TokenAuthentication]
     permission_classes = [AllowAny]
 
     def get(self, request, *args, **kwargs):
         u = request.user if request.user.is_authenticated else None
-        data = {
+        return Response({
             "is_authenticated": bool(u),
-            "id": (u.id if u else None),
-            "username": (u.get_username() if u else None),
+            "username": (u.get_username() if u else ""),
             "is_staff": bool(u and getattr(u, "is_staff", False)),
-        }
-        resp = Response(data, status=status.HTTP_200_OK)
-        resp["Cache-Control"] = "no-store"
-        resp["Vary"] = "Cookie, Authorization"
-        return resp
+        })

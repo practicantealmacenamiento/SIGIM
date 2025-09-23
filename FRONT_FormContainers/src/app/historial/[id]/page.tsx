@@ -91,7 +91,7 @@ const buildQuestionIndex = (detail: any) => {
 };
 
 const getQText = (a: AnswerDetail, idx: Map<string, any>) => {
-  const flat = (a as any).question_text ?? a?.question?.text ?? a?.question?.label ?? null;
+  const flat = (a as any).question_text ?? a?.question?.text ?? (a?.question as any)?.label ?? null;
   if (flat) return flat;
   const qid = qidOf(a);
   return qid ? idx.get(qid)?.text ?? null : null;

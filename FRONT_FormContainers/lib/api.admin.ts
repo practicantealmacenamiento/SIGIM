@@ -3,7 +3,6 @@
 // ======================
 
 export const adminTokenKey = "admin_token";
-export const whoami = fetchWhoAmI;
 
 // ----------------------
 // URL helpers
@@ -23,43 +22,19 @@ function buildUrl(path: string) {
 }
 
 // ----------------------
-// Cookies helpers (versión robusta)
+// Cookies helpers
 // ----------------------
 function getCookie(name: string): string | null {
   if (typeof document === "undefined") return null;
   const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
   return m ? decodeURIComponent(m[1]) : null;
 }
-
 function setCookie(name: string, value: string, days = 7) {
   const exp = new Date(Date.now() + days * 864e5).toUTCString();
   document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Expires=${exp}; SameSite=Lax`;
 }
-
-/** Borra el cookie en variantes comunes de dominio/SameSite para garantizar su eliminación */
-function hardDeleteCookie(name: string) {
-  if (typeof document === "undefined" || typeof location === "undefined") return;
-  const host = location.hostname; // p.ej. app.empresa.com
-  const parts = host.split(".");
-  const variants = new Set<string | undefined>([
-    undefined,                                                          // sin Domain
-    host,                                                               // app.empresa.com
-    parts.length >= 2 ? `.${parts.slice(-2).join(".")}` : undefined,    // .empresa.com
-    parts.length >= 3 ? `.${parts.slice(-3).join(".")}` : undefined,    // .sub.empresa.com
-  ]);
-  const samesites = ["Lax", "Strict", "None"];
-  for (const d of variants) {
-    for (const ss of samesites) {
-      document.cookie =
-        `${name}=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=${ss};` +
-        (d ? ` Domain=${d};` : "");
-    }
-  }
-}
-
-// Alias compatible usado en el proyecto
 function delCookie(name: string) {
-  hardDeleteCookie(name);
+  document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax`;
 }
 
 // ----------------------
@@ -78,7 +53,7 @@ export function setAdminToken(token: string) {
 }
 export function clearAdminToken() {
   if (typeof window !== "undefined") localStorage.removeItem(adminTokenKey);
-  hardDeleteCookie("auth_token"); // borrado agresivo
+  delCookie("auth_token");
 }
 
 // ----------------------
@@ -146,9 +121,9 @@ export type Actor = {
 
 export type WhoAmI = {
   is_authenticated: boolean;
-  id: number | null;
-  username: string | null;
   is_staff: boolean;
+  id: number | string | null;
+  username: string | null;
 };
 
 // ==== Usuarios (administración) ====
@@ -163,19 +138,11 @@ export type AdminUser = {
 };
 
 // ======================
-// Utilidades de limpieza en cliente
-// ======================
-function nukeAuthResidues() {
-  try { localStorage.removeItem("auth_username"); } catch {}
-  ["auth_token", "auth_username", "sessionid", "csrftoken", "is_staff"].forEach(hardDeleteCookie);
-}
-
-// ======================
 // Auth
 // ======================
-export async function adminLoginDetail(usernameOrEmail: string, password: string) {
+export async function adminLogin(usernameOrEmail: string, password: string) {
   // 1) Login: crea sesión, devuelve token y (tu back) setea cookies de UI
-  const url = buildUrl("admin/login/");
+  const url = buildUrl("login/");
   const res = await fetch(url, withAuth({
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -200,29 +167,13 @@ export async function adminLoginDetail(usernameOrEmail: string, password: string
   return data;
 }
 
-/** Compat: algunas piezas esperan que adminLogin devuelva solo el token (string) */
-export async function adminLogin(usernameOrEmail: string, password: string): Promise<string> {
-  const data = await adminLoginDetail(usernameOrEmail, password);
-  return data.token;
-}
-
 export async function fetchWhoAmI(explicitToken?: string): Promise<WhoAmI> {
   const headers: HeadersInit = explicitToken ? { Authorization: `Token ${explicitToken}` } : {};
-  const res = await fetch(buildUrl("admin/whoami"), withAuth({
-    method: "GET",
-    headers: { ...headers, "Cache-Control": "no-store", Pragma: "no-cache" },
-    cache: "no-store",
-  }));
+  const res = await fetch(buildUrl("whoami/"), withAuth({ method: "GET", headers }));
   const who = await handleResponse<WhoAmI>(res);
-
-  // Mantén username “cacheado” si lo usas en UI
   if (typeof who?.username === "string") {
     try { localStorage.setItem("auth_username", who.username || ""); } catch {}
   }
-
-  // 🔑 Cookie visible para middleware/navbar
-  setCookie("is_staff", who?.is_staff ? "1" : "0", 7);
-
   return who;
 }
 
@@ -233,27 +184,23 @@ export async function isAdmin(): Promise<boolean> {
   } catch { return false; }
 }
 
-/** Cierra sesión en back (si existe /admin/logout/) y limpia señales en cliente. */
+/** Cierra sesión en back (si existe /logout/) y limpia señales en cliente. */
 export async function adminLogout() {
   try {
-    const logoutUrl = buildUrl("admin/logout");
-    await fetch(logoutUrl, withAuth({
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
-      cache: "no-store",
-    }));
+    const logoutUrl = buildUrl("logout/");
+    await fetch(logoutUrl, withAuth({ method: "POST", headers: { "Content-Type": "application/json" } }));
   } catch { /* ignora si el endpoint no existe */ }
 
-  // Limpieza AGRESIVA en el cliente (incluye auth_username)
   clearAdminToken();
-  nukeAuthResidues();
+  try { localStorage.removeItem("auth_username"); } catch {}
+  setCookie("is_staff", "0", 1);
 }
 
 // ======================
 // Questionnaires (admin)
 // ======================
 export async function adminListQuestionnaires(): Promise<AdminQuestionnaire[]> {
-  const res = await fetch(buildUrl("admin/questionnaires"), withAuth({ method: "GET" }));
+  const res = await fetch(buildUrl("management/questionnaires/"), withAuth({ method: "GET" }));
   return handleResponse<AdminQuestionnaire[]>(res);
 }
 
@@ -269,13 +216,13 @@ export async function listQuestionnaires(): Promise<{ id: string; title: string;
 }
 
 export async function adminGetQuestionnaire(id: UUID): Promise<AdminQuestionnaire> {
-  const res = await fetch(buildUrl(`admin/questionnaires/${id}`), withAuth({ method: "GET" }));
+  const res = await fetch(buildUrl(`management/questionnaires/${id}/`), withAuth({ method: "GET" }));
   return handleResponse<AdminQuestionnaire>(res);
 }
 export const getQuestionnaire = adminGetQuestionnaire;
 
 export async function adminUpsertQuestionnaire(qn: AdminQuestionnaire) {
-  const res = await fetch(buildUrl("admin/questionnaires/upsert"), withAuth({
+  const res = await fetch(buildUrl("management/questionnaires/upsert/"), withAuth({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(qn),
@@ -285,7 +232,7 @@ export async function adminUpsertQuestionnaire(qn: AdminQuestionnaire) {
 export const upsertQuestionnaire = adminUpsertQuestionnaire;
 
 export async function duplicateQuestionnaire(id: UUID, nextVersion?: string): Promise<{ id: UUID }> {
-  const res = await fetch(buildUrl(`admin/questionnaires/${id}/duplicate`), withAuth({
+  const res = await fetch(buildUrl(`management/questionnaires/${id}/duplicate/`), withAuth({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(nextVersion ? { version: nextVersion } : {}),
@@ -294,14 +241,14 @@ export async function duplicateQuestionnaire(id: UUID, nextVersion?: string): Pr
 }
 
 export async function deleteQuestionnaire(id: UUID) {
-  const res = await fetch(buildUrl(`admin/questionnaires/${id}`), withAuth({ method: "DELETE" }));
+  const res = await fetch(buildUrl(`management/questionnaires/${id}/`), withAuth({ method: "DELETE" }));
   if (!res.ok && res.status !== 204) await handleResponse(res);
   return { ok: true };
 }
 
 // Reordenar preguntas
 export async function reorderQuestions(id: UUID, order: string[]) {
-  const res = await fetch(buildUrl(`admin/questionnaires/${id}/reorder`), withAuth({
+  const res = await fetch(buildUrl(`management/questionnaires/${id}/reorder/`), withAuth({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ order }),
@@ -325,7 +272,7 @@ export async function adminListActors(
   if (tipo) qs.push(`tipo=${encodeURIComponent(tipo)}`);
   const query = qs.length ? `?${qs.join("&")}` : "";
 
-  const res = await fetch(buildUrl(`admin/actors/${query}`), withAuth({ method: "GET" }));
+  const res = await fetch(buildUrl(`management/actors/${query}`), withAuth({ method: "GET" }));
   const data = await handleResponse<Actor[] | { results: Actor[]; count?: number; next?: string; previous?: string }>(res);
 
   // Soporta tanto lista simple como paginado
@@ -342,7 +289,7 @@ export async function listActors(
 }
 
 export async function adminCreateActor(payload: Omit<Actor, "id">) {
-  const res = await fetch(buildUrl("admin/actors"), withAuth({
+  const res = await fetch(buildUrl("management/actors/"), withAuth({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -351,7 +298,7 @@ export async function adminCreateActor(payload: Omit<Actor, "id">) {
 }
 
 export async function adminUpdateActor(id: UUID, patch: Partial<Omit<Actor, "id">>) {
-  const res = await fetch(buildUrl(`admin/actors/${id}`), withAuth({
+  const res = await fetch(buildUrl(`management/actors/${id}/`), withAuth({
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -360,7 +307,7 @@ export async function adminUpdateActor(id: UUID, patch: Partial<Omit<Actor, "id"
 }
 
 export async function adminDeleteActor(id: UUID) {
-  const res = await fetch(buildUrl(`admin/actors/${id}`), withAuth({ method: "DELETE" }));
+  const res = await fetch(buildUrl(`management/actors/${id}/`), withAuth({ method: "DELETE" }));
   if (!res.ok && res.status !== 204) await handleResponse(res);
   return { ok: true };
 }
@@ -370,7 +317,7 @@ export const deleteActor = adminDeleteActor;
 // Users (admin)
 // ======================
 export async function listAdminUsers(): Promise<AdminUser[]> {
-  const res = await fetch(buildUrl("admin/users"), withAuth({ method: "GET" }));
+  const res = await fetch(buildUrl("management/users/"), withAuth({ method: "GET" }));
   return handleResponse<AdminUser[]>(res);
 }
 
@@ -385,14 +332,14 @@ export async function upsertAdminUser(payload: AdminUser): Promise<AdminUser> {
   if (payload.password) (body as any).password = payload.password;
 
   if (payload.id) {
-    const res = await fetch(buildUrl(`admin/users/${payload.id}`), withAuth({
+    const res = await fetch(buildUrl(`management/users/${payload.id}/`), withAuth({
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }));
     return handleResponse<AdminUser>(res);
   } else {
-    const res = await fetch(buildUrl("admin/users"), withAuth({
+    const res = await fetch(buildUrl("management/users/"), withAuth({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -402,7 +349,7 @@ export async function upsertAdminUser(payload: AdminUser): Promise<AdminUser> {
 }
 
 export async function deleteAdminUser(id: number): Promise<{ ok: true }> {
-  const res = await fetch(buildUrl(`admin/users/${id}`), withAuth({ method: "DELETE" }));
+  const res = await fetch(buildUrl(`management/users/${id}/`), withAuth({ method: "DELETE" }));
   if (!res.ok && res.status !== 204) await handleResponse(res);
   return { ok: true };
 }
@@ -416,7 +363,6 @@ let _installed = false;
  *  - agrega credenciales (cookies) siempre
  *  - agrega X-CSRFToken en métodos de escritura
  *  - agrega Authorization: Token <admin_token> si existe
- *  - fuerza "no-store" para evitar respuestas cacheadas
  * Útil si piezas aisladas del front hacen "fetch" directo.
  */
 export function installGlobalAuthFetch() {
@@ -429,7 +375,7 @@ export function installGlobalAuthFetch() {
       const headers = new Headers(init?.headers || {});
       const method = (init?.method || "GET").toUpperCase();
 
-      // CSRF para métodos de escritura
+      // CSRF
       if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
         const csrf = getCookie("csrftoken");
         if (csrf && !headers.has("X-CSRFToken")) headers.set("X-CSRFToken", csrf);
@@ -438,13 +384,26 @@ export function installGlobalAuthFetch() {
       const tok = getAdminToken();
       if (tok && !headers.has("Authorization")) headers.set("Authorization", `Token ${tok}`);
 
-      headers.set("Cache-Control", "no-store");
-
-      return original(input, { ...init, headers, credentials: "include", cache: "no-store" });
+      return original(input, { ...init, headers, credentials: "include" });
     } catch {
       return original(input, init);
     }
   };
 
   _installed = true;
+}
+// ======================
+// Submissions (admin)
+// ======================
+export async function createSubmission(payload: {
+  questionnaire: string;
+  tipo_fase: string;
+  regulador_id?: string;
+}): Promise<{ id: string; [key: string]: any }> {
+  const res = await fetch(buildUrl("submissions/"), withAuth({
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }));
+  return handleResponse<{ id: string; [key: string]: any }>(res);
 }

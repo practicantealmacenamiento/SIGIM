@@ -6,17 +6,15 @@ from uuid import UUID
 from django.conf import settings
 from django.http import FileResponse, Http404
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.contrib.auth import logout as django_logout
 
 from rest_framework import viewsets, mixins, status
-from rest_framework.authentication import TokenAuthentication, SessionAuthentication, get_authorization_header
+from rest_framework.authentication import TokenAuthentication, SessionAuthentication
 from rest_framework.generics import ListCreateAPIView, RetrieveAPIView
 from rest_framework.parsers import MultiPartParser, FormParser
-from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
+from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.authtoken.models import Token
 
 from drf_spectacular.utils import (
     extend_schema,
@@ -29,11 +27,13 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView  # 
 from app.application.commands import SaveAndAdvanceCommand
 from app.application.services import SubmissionService, HistoryService
 from app.application.questionnaire import QuestionnaireService
-from app.application.exceptions import ValidationError, DomainError
 from app.application.verification import VerificationService, InvalidImage, ExtractionFailed
+from app.domain.exceptions import DomainException
+
+# ===== Manejo de excepciones =====
+from app.interfaces.exception_handlers import translate_domain_exception
 
 # ===== Infraestructura / Adaptadores =====
-from app.infrastructure.models import Submission, Question, Actor
 from app.infrastructure.serializers import (
     QuestionModelSerializer,
     SubmissionModelSerializer,
@@ -47,16 +47,9 @@ from app.infrastructure.serializers import (
     QuestionnaireListItemSerializer,
     HistorialItemSerializer,
 )
-from app.infrastructure.repositories import (
-    DjangoAnswerRepository,
-    DjangoSubmissionRepository,
-    DjangoQuestionRepository,
-    DjangoChoiceRepository,
-    DjangoActorRepository,
-    DjangoQuestionnaireRepository,
-)
-from app.infrastructure.storage import DjangoDefaultStorageAdapter
-from app.infrastructure.vision import GoogleVisionAdapter
+from app.infrastructure.factories import get_service_factory
+from app.infrastructure.repositories import DjangoSubmissionRepository, DjangoQuestionnaireRepository
+from app.infrastructure.models import Question as QuestionModel
 
 
 # ===============================
@@ -83,12 +76,20 @@ class PrivateSwaggerUIView(SpectacularSwaggerView):
 # ===============================
 class VerificacionUniversalAPIView(APIView):
     """
-    POST /api/verificar/
-    Sube una imagen y aplica OCR + reglas según semantic_tag de la pregunta.
+    Universal OCR verification endpoint.
+    Handles only HTTP concerns and delegates completely to VerificationService.
     """
     authentication_classes = [TokenAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._factory = get_service_factory()
+
+    def _get_verification_service(self):
+        """Factory method for dependency injection."""
+        return self._factory.create_verification_service()
 
     @extend_schema(
         request=VerificationInputSerializer,
@@ -97,43 +98,38 @@ class VerificacionUniversalAPIView(APIView):
         description="OCR (Google Vision) + reglas por semantic_tag (placa, precinto, contenedor). Requiere usuario autenticado.",
     )
     def post(self, request):
-        ser = VerificationInputSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        data = ser.validated_data
+        """Handle OCR verification request - validates input and delegates to service."""
+        # Input validation only
+        serializer = VerificationInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
 
+        # Extract image file from request
+        if "imagen" not in request.FILES:
+            return Response({"error": "Se requiere una imagen."}, status=400)
+        
+        imagen_file = request.FILES["imagen"]
+
+        # Delegate completely to verification service
         try:
-            question = Question.objects.get(id=data["question_id"])
-        except Question.DoesNotExist:
-            return Response({"error": "Pregunta no encontrada."}, status=404)
-
-        adapter = GoogleVisionAdapter(mode=data.get("mode", "text"), language_hints=["es", "en"])
-        service = VerificationService(adapter)
-
-        imagen = request.FILES["imagen"]
-        try:
-            if hasattr(imagen, "seek"):
-                imagen.seek(0)
-        except Exception:
-            pass
-        imagen_bytes = imagen.read()
-
-        tag = getattr(question, "semantic_tag", "") or "none"
-        try:
-            result = service.verificar_universal(tag, imagen_bytes)
-            result["semantic_tag"] = tag
-        except InvalidImage as e:
-            return Response({"error": str(e)}, status=400)
-        except ExtractionFailed as e:
-            return Response({"error": str(e)}, status=502)
-
-        return Response(VerificationResponseSerializer(result).data)
+            service = self._get_verification_service()
+            result = service.verify_with_question(data["question_id"], imagen_file)
+            
+            return Response(VerificationResponseSerializer(result).data)
+        except DomainException as e:
+            return translate_domain_exception(e)
+        except Exception as e:
+            return Response(
+                {"error": "Error interno del servidor", "type": "internal_error"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 # ==========================================
 # Cuestionario (primera pregunta) — autenticado
 # ==========================================
 class PrimeraPreguntaAPIView(APIView):
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
@@ -144,20 +140,48 @@ class PrimeraPreguntaAPIView(APIView):
     )
     def get(self, request):
         qid = request.query_params.get("questionnaire_id")
-        qs = Question.objects.filter(questionnaire=qid) if qid else Question.objects
-        pregunta = qs.order_by("order").first()
-        if not pregunta:
-            return Response({"error": "No se encontró ninguna pregunta."}, status=404)
-        return Response(QuestionModelSerializer(pregunta).data)
+        if qid:
+            try:
+                # Usar el repositorio para obtener las preguntas del cuestionario
+                from app.infrastructure.repositories import DjangoQuestionRepository
+                repo = DjangoQuestionRepository()
+                questions = repo.list_by_questionnaire(UUID(qid))
+                if not questions:
+                    return Response({"error": "No se encontraron preguntas para este cuestionario."}, status=404)
+                # Obtener la primera pregunta por orden
+                first_question = min(questions, key=lambda q: q.order)
+                # Convertir la entidad de dominio a modelo para serialización
+                pregunta = QuestionModel.objects.get(id=first_question.id)
+                return Response(QuestionModelSerializer(pregunta).data)
+            except (ValueError, QuestionModel.DoesNotExist):
+                return Response({"error": "Cuestionario no válido o pregunta no encontrada."}, status=404)
+        else:
+            # Si no se especifica cuestionario, obtener la primera pregunta de cualquier cuestionario
+            pregunta = QuestionModel.objects.order_by("order").first()
+            if not pregunta:
+                return Response({"error": "No se encontró ninguna pregunta."}, status=404)
+            return Response(QuestionModelSerializer(pregunta).data)
 
 
 # ==========================================
 # Guardar y Avanzar — autenticado (no admin)
 # ==========================================
 class GuardarYAvanzarAPIView(APIView):
-    authentication_classes = [TokenAuthentication]
+    """
+    Save answer and advance to next question.
+    Simplified to only handle HTTP concerns and delegate to QuestionnaireService.
+    """
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._factory = get_service_factory()
+
+    def _get_questionnaire_service(self):
+        """Factory method for dependency injection."""
+        return self._factory.create_questionnaire_service()
 
     @extend_schema(
         request=SaveAndAdvanceInputSerializer,
@@ -167,74 +191,85 @@ class GuardarYAvanzarAPIView(APIView):
         description="Guarda una respuesta y devuelve la siguiente pregunta. Requiere usuario autenticado.",
     )
     def post(self, request):
-        in_ser = SaveAndAdvanceInputSerializer(data=request.data)
-        in_ser.is_valid(raise_exception=True)
-        data = in_ser.validated_data
+        """Handle save and advance request - validates input and delegates to service."""
+        # Input validation
+        serializer = SaveAndAdvanceInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
 
-        # Validar pregunta
-        try:
-            q = Question.objects.get(id=data["question_id"])
-        except Question.DoesNotExist:
-            return Response({"error": "Pregunta no encontrada."}, status=404)
+        # Prepare file uploads (handle legacy and new formats)
+        uploads = self._prepare_uploads(request, data)
 
-        # Manejo de archivos (0..2)
-        uploads = []
-        legacy = request.FILES.getlist("answer_file")
-        if legacy:
-            uploads.extend(legacy)
-        if "answer_file" in data and data["answer_file"]:
-            uploads.append(data["answer_file"])
-        if "answer_file_extra" in data and data["answer_file_extra"]:
-            uploads.append(data["answer_file_extra"])
-        if len(uploads) > 2:
-            uploads = uploads[:2]
-
-        # Caso de uso
-        service = QuestionnaireService(
-            answer_repo=DjangoAnswerRepository(),
-            submission_repo=DjangoSubmissionRepository(),
-            question_repo=DjangoQuestionRepository(),
-            choice_repo=DjangoChoiceRepository(),
-            storage=DjangoDefaultStorageAdapter(),
-        )
-
+        # Create command
         cmd = SaveAndAdvanceCommand(
             submission_id=data["submission_id"],
-            question_id=q.id,
+            question_id=data["question_id"],
             user_id=data.get("user_id"),
             answer_text=data.get("answer_text"),
             answer_choice_id=data.get("answer_choice_id"),
             uploads=uploads,
         )
 
+        # Delegate to service and handle domain exceptions consistently
         try:
+            service = self._get_questionnaire_service()
             result = service.save_and_advance(cmd)
-        except ValidationError as e:
-            return Response({"error": str(e)}, status=400)
-        except DomainError as e:
-            return Response({"error": str(e)}, status=404)
+            return Response(
+                SaveAndAdvanceResponseSerializer(result, context={"request": request}).data
+            )
+        except DomainException as e:
+            return translate_domain_exception(e)
         except DjangoValidationError as e:
-            return Response({"error": getattr(e, "message_dict", str(e))}, status=400)
+            # Handle Django validation errors separately as they're not domain exceptions
+            error_message = getattr(e, "message_dict", str(e))
+            return Response(
+                {"error": error_message, "type": "validation_error"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            return Response(
+                {"error": "Error interno del servidor", "type": "internal_error"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
-        return Response(SaveAndAdvanceResponseSerializer(result, context={"request": request}).data)
+    def _prepare_uploads(self, request, data):
+        """Prepare file uploads from request - handles legacy and new formats."""
+        uploads = []
+        
+        # Legacy format: answer_file list
+        legacy = request.FILES.getlist("answer_file")
+        if legacy:
+            uploads.extend(legacy)
+        
+        # New format: individual fields
+        if "answer_file" in data and data["answer_file"]:
+            uploads.append(data["answer_file"])
+        if "answer_file_extra" in data and data["answer_file_extra"]:
+            uploads.append(data["answer_file_extra"])
+        
+        # Limit to maximum 2 files
+        return uploads[:2] if len(uploads) > 2 else uploads
 
 
 # ======================
 # Submissions — autenticado
 # ======================
-class SubmissionListCreateAPIView(ListCreateAPIView):
+class SubmissionViewSet(viewsets.ViewSet):
     """
-    GET lista submissions (paginado) / POST crea una submission (fase).
-    Requiere usuario autenticado (no admin).
+    ViewSet for Submission operations.
+    Delegates all business logic to application services.
     """
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
-    queryset = Submission.objects.none()
+    pagination_class = PageNumberPagination
 
-    def get_serializer_class(self):
-        if self.request.method == "POST":
-            return SubmissionCreateSerializer
-        return SubmissionModelSerializer
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._factory = get_service_factory()
+
+    def _get_submission_service(self) -> SubmissionService:
+        """Factory method for dependency injection."""
+        return self._factory.create_submission_service()
 
     @extend_schema(
         parameters=[
@@ -249,21 +284,26 @@ class SubmissionListCreateAPIView(ListCreateAPIView):
         tags=["Submissions"],
         description="Lista submissions con filtros. Requiere usuario autenticado.",
     )
-    def list(self, request, *args, **kwargs):
-        repo = DjangoSubmissionRepository()
-        qs = repo.list_for_api(request.query_params)
+    def list(self, request):
+        """List submissions with filters - delegates to repository."""
+        try:
+            repo = DjangoSubmissionRepository()
+            qs = repo.list_for_api(request.query_params)
 
-        page = self.paginate_queryset(qs)
-        if page is not None:
+            paginator = self.pagination_class()
+            page = paginator.paginate_queryset(qs, request)
+            if page is not None:
+                serializer = SubmissionModelSerializer(
+                    page, many=True, context={"request": request}
+                )
+                return paginator.get_paginated_response(serializer.data)
+
             serializer = SubmissionModelSerializer(
-                page, many=True, context={"request": request}
+                qs, many=True, context={"request": request}
             )
-            return self.get_paginated_response(serializer.data)
-
-        serializer = SubmissionModelSerializer(
-            qs, many=True, context={"request": request}
-        )
-        return Response(serializer.data)
+            return Response(serializer.data)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
 
     @extend_schema(
         request=SubmissionCreateSerializer,
@@ -271,85 +311,89 @@ class SubmissionListCreateAPIView(ListCreateAPIView):
         tags=["Submissions"],
         description="Crea una nueva submission (fase). Requiere usuario autenticado.",
     )
-    def create(self, request, *args, **kwargs):
-        s = SubmissionCreateSerializer(data=request.data)
-        s.is_valid(raise_exception=True)
-        repo = DjangoSubmissionRepository()
-        created = repo.create_submission(**s.validated_data)
-        return Response(SubmissionModelSerializer(created).data, status=201)
+    def create(self, request):
+        """Create new submission - validates input and delegates to repository."""
+        serializer = SubmissionCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        try:
+            repo = DjangoSubmissionRepository()
+            created = repo.create_submission(**serializer.validated_data)
+            return Response(
+                SubmissionModelSerializer(created, context={"request": request}).data, 
+                status=201
+            )
+        except DomainException as e:
+            return translate_domain_exception(e)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
 
-
-class SubmissionFinalizarAPIView(APIView):
-    """
-    POST /api/submissions/<id>/finalizar/ — marca finalizada y deriva placa si aplica.
-    Requiere usuario autenticado (no admin).
-    """
-    authentication_classes = [TokenAuthentication]
-    permission_classes = [IsAuthenticated]
+    @extend_schema(
+        responses={200: SubmissionModelSerializer, 404: OpenApiTypes.OBJECT},
+        tags=["Submissions"],
+        description="Detalle de una submission. Requiere usuario autenticado.",
+    )
+    def retrieve(self, request, pk=None):
+        """Get submission detail - delegates to service."""
+        try:
+            repo = DjangoSubmissionRepository()
+            # Get the model directly from repository for serialization
+            model = repo.detail_queryset().filter(id=pk).first()
+            if not model:
+                return Response({'error': 'Submission no encontrada.'}, status=404)
+            
+            return Response(SubmissionModelSerializer(model, context={"request": request}).data)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
 
     @extend_schema(
         responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
         tags=["Submissions"],
         description="Marca una submission como finalizada. Requiere usuario autenticado.",
     )
-    def post(self, request, id):
-        service = SubmissionService(
-            submission_repo=DjangoSubmissionRepository(),
-            answer_repo=DjangoAnswerRepository(),
-            question_repo=DjangoQuestionRepository(),
-        )
+    def finalize(self, request, pk=None):
+        """Finalize submission - delegates to service."""
         try:
-            updates = service.finalize_submission(id)
-        except DomainError as e:
-            return Response({"error": str(e)}, status=404)
-
-        payload = {"mensaje": "Submission finalizada", **updates}
-        return Response(payload)
-
-
-class SubmissionDetailAPIView(RetrieveAPIView):
-    """
-    GET /api/submissions/<id>/ — detalle simple (autenticado).
-    """
-    authentication_classes = [TokenAuthentication]
-    permission_classes = [IsAuthenticated]
-    serializer_class = SubmissionModelSerializer
-    lookup_field = "id"
-
-    def get_queryset(self):
-        return DjangoSubmissionRepository().detail_queryset()
-
-
-class SubmissionDetailEnrichedAPIView(APIView):
-    """
-    GET /api/submissions/<id>/enriched/ — detalle con respuestas (autenticado).
-    """
-    authentication_classes = [TokenAuthentication, SessionAuthentication]
-    permission_classes = [IsAuthenticated]
+            service = self._get_submission_service()
+            updates = service.finalize_submission(pk)
+            return Response({"mensaje": "Submission finalizada", **updates})
+        except DomainException as e:
+            return translate_domain_exception(e)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
 
     @extend_schema(
         responses={200: SubmissionModelSerializer},
         tags=["Submissions"],
         description="Detalle completo de una submission con respuestas. Requiere usuario autenticado.",
     )
-    def get(self, request, id):
-        repo = DjangoSubmissionRepository()
-        submission = repo.get_detail(id)
-        if not submission:
-            return Response({'error': 'Submission no encontrada.'}, status=404)
+    def enriched_detail(self, request, pk=None):
+        """Get enriched submission detail with answers - delegates to service."""
+        try:
+            repo = DjangoSubmissionRepository()
+            # Get the model directly from repository for serialization
+            submission_model = repo.detail_queryset().filter(id=pk).first()
+            if not submission_model:
+                return Response({'error': 'Submission no encontrada.'}, status=404)
+            
+            return Response({
+                'submission': SubmissionModelSerializer(submission_model, context={"request": request}).data,
+                'answers': AnswerReadSerializer(submission_model.answers.all(), many=True, context={'request': request}).data,
+            })
+        except DomainException as e:
+            return translate_domain_exception(e)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
 
-        answers_qs = getattr(submission, 'answers', None).all() if submission else []
-        return Response({
-            'submission': SubmissionModelSerializer(submission).data,
-            'answers': AnswerReadSerializer(answers_qs, many=True, context={'request': request}).data,
-        })
+
+
 
 
 # ======================
 # Historial — autenticado
 # ======================
 class HistorialReguladoresAPIView(APIView):
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
@@ -364,11 +408,8 @@ class HistorialReguladoresAPIView(APIView):
     )
     def get(self, request):
         p = request.query_params
-        service = HistoryService(
-            submission_repo=DjangoSubmissionRepository(),
-            answer_repo=DjangoAnswerRepository(),
-            question_repo=DjangoQuestionRepository(),
-        )
+        factory = get_service_factory()
+        service = factory.create_history_service()
         items = service.list_history(
             fecha_desde=p.get("fecha_desde"),
             fecha_hasta=p.get("fecha_hasta"),
@@ -381,7 +422,7 @@ class HistorialReguladoresAPIView(APIView):
 # Media protegida — autenticado (no público)
 # ============================================
 class MediaProtectedAPIView(APIView):
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
@@ -403,26 +444,28 @@ class MediaProtectedAPIView(APIView):
 # =====================================
 # Catálogos — autenticado (no admin)
 # =====================================
-class ActorViewSet(viewsets.ReadOnlyModelViewSet):
+class ActorViewSet(viewsets.ViewSet):
     """
     GET /api/catalogos/actores/ — visible a usuarios autenticados.
     """
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
-    serializer_class = ActorModelSerializer
     pagination_class = None
-    queryset = Actor.objects.none()
 
     def list(self, request, *args, **kwargs):
-        qs = DjangoActorRepository().public_list(request.query_params)
-        return Response(self.get_serializer(qs, many=True).data)
+        # Use repository pattern instead of direct model access
+        from app.infrastructure.repositories import DjangoActorRepository
+        repo = DjangoActorRepository()
+        qs = repo.public_list(request.query_params)
+        serializer = ActorModelSerializer(qs, many=True)
+        return Response(serializer.data)
 
 
 # =====================================
 # Lista de cuestionarios — autenticado
 # =====================================
 class QuestionnaireListAPIView(APIView):
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
@@ -439,7 +482,7 @@ class QuestionnaireListAPIView(APIView):
 # Detalle de pregunta — autenticado
 # =====================================
 class QuestionDetailAPIView(APIView):
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
@@ -449,10 +492,17 @@ class QuestionDetailAPIView(APIView):
     )
     def get(self, request, id):
         try:
-            q = Question.objects.get(id=id)
-        except Question.DoesNotExist:
+            # Usar el repositorio para obtener la pregunta
+            from app.infrastructure.repositories import DjangoQuestionRepository
+            repo = DjangoQuestionRepository()
+            question_entity = repo.get(UUID(id))
+            if not question_entity:
+                return Response({"error": "Pregunta no encontrada."}, status=404)
+            # Convertir la entidad de dominio a modelo para serialización
+            q = QuestionModel.objects.get(id=question_entity.id)
+            return Response(QuestionModelSerializer(q).data)
+        except (ValueError, QuestionModel.DoesNotExist):
             return Response({"error": "Pregunta no encontrada."}, status=404)
-        return Response(QuestionModelSerializer(q).data)
 
 
 # =====================================
@@ -464,103 +514,60 @@ class StandardResultsSetPagination(PageNumberPagination):
     max_page_size = 200
 
 
-class AdminActorViewSet(
-    mixins.ListModelMixin,
-    mixins.CreateModelMixin,
-    mixins.UpdateModelMixin,
-    mixins.DestroyModelMixin,
-    viewsets.GenericViewSet
-):
+class AdminActorViewSet(viewsets.ViewSet):
     """
     /api/admin/actors/ — restringido a staff (panel administrativo).
     """
-    serializer_class = ActorModelSerializer
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     permission_classes = [IsAdminUser]
     pagination_class = StandardResultsSetPagination
-    queryset = Actor.objects.none()
 
-    def get_queryset(self):
-        return DjangoActorRepository().admin_queryset(self.request.query_params)
+    def list(self, request):
+        from app.infrastructure.repositories import DjangoActorRepository
+        repo = DjangoActorRepository()
+        qs = repo.admin_queryset(request.query_params)
+        
+        # Apply pagination
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(qs, request)
+        if page is not None:
+            serializer = ActorModelSerializer(page, many=True)
+            return paginator.get_paginated_response(serializer.data)
+        
+        serializer = ActorModelSerializer(qs, many=True)
+        return Response(serializer.data)
 
-class LogoutAPIView(APIView):
-    """
-    POST /api/logout/  y también /api/admin/logout/ (mapeado en urls)
-    - Idempotente y accesible sin auth (AllowAny) para que nunca falle el cierre.
-    - Revoca token DRF (el del header; si hay usuario, todos los del usuario).
-    - Invalida la sesión en servidor (flush()), de modo que un 'sessionid' viejo no sirve jamás.
-    - Intenta borrar cookies en variantes comunes de domain/SameSite.
-    """
-    authentication_classes = [SessionAuthentication, TokenAuthentication]
-    permission_classes = [AllowAny]
+    def create(self, request):
+        serializer = ActorModelSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-    def post(self, request):
-        # 1) Revocar token del header (Bearer/Token ...) y, si hay user, todos los del user
+    def retrieve(self, request, pk=None):
+        from app.infrastructure.models import Actor
         try:
-            raw = get_authorization_header(request).decode("utf-8") if get_authorization_header(request) else ""
-            key = raw.split()[1] if raw and raw.lower().startswith(("bearer ", "token ")) else None
-            if key:
-                Token.objects.filter(key=key).delete()
-            if getattr(request, "user", None) and request.user.is_authenticated:
-                Token.objects.filter(user=request.user).delete()
-        except Exception:
-            pass
+            actor = Actor.objects.get(pk=pk)
+            serializer = ActorModelSerializer(actor)
+            return Response(serializer.data)
+        except Actor.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
 
-        # 2) INVALIDAR sesión en servidor (aunque el cookie "sessionid" quede visible, ya no sirve)
+    def update(self, request, pk=None):
+        from app.infrastructure.models import Actor
         try:
-            # flush borra la sesión del storage y rota la cookie server-side
-            request.session.flush()
-        except Exception:
-            pass
+            actor = Actor.objects.get(pk=pk)
+            serializer = ActorModelSerializer(actor, data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data)
+        except Actor.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
 
-        # 3) Logout Django (por si hubiera backends de auth atados a request.user)
+    def destroy(self, request, pk=None):
+        from app.infrastructure.models import Actor
         try:
-            django_logout(request)
-        except Exception:
-            pass
-
-        # 4) Respuesta + borrado AGRESIVO de cookies en variantes
-        resp = Response({"ok": True}, status=status.HTTP_200_OK)
-        resp["Cache-Control"] = "no-store"
-        resp["Vary"] = "Cookie, Authorization"
-
-        # Nombres relevantes (usa nombres desde settings por si los cambiaste)
-        session_cookie = getattr(settings, "SESSION_COOKIE_NAME", "sessionid")
-        csrf_cookie = getattr(settings, "CSRF_COOKIE_NAME", "csrftoken")
-        names = {
-            session_cookie,
-            csrf_cookie,
-            "auth_token",
-            "auth_username",
-            "is_staff",
-        }
-
-        # Variantes de dominio: exacto, raíz (e.g. .empresa.com) y sin domain
-        host = (request.get_host() or "").split(":")[0] or None
-        parts = (host or "").split(".") if host else []
-        domains = [None]
-        if host: domains.append(host)
-        if len(parts) >= 2: domains.append("." + ".".join(parts[-2:]))
-        if len(parts) >= 3: domains.append("." + ".".join(parts[-3:]))
-
-        # Safari/Chrome pueden exigir SameSite coincidente al borrar
-        samesites = ["Lax", "Strict", "None"]
-
-        for name in names:
-            for d in domains:
-                for ss in samesites:
-                    # delete_cookie ya marca Max-Age=0 y Expires pasado
-                    resp.delete_cookie(key=name, path="/", domain=d, samesite=ss)
-
-        # Señal de UI
-        try:
-            resp.set_cookie(
-                key="is_staff", value="0", path="/",
-                samesite=getattr(settings, "SESSION_COOKIE_SAMESITE", "Lax"),
-                secure=getattr(settings, "SESSION_COOKIE_SECURE", False),
-                domain=getattr(settings, "SESSION_COOKIE_DOMAIN", None),
-            )
-        except Exception:
-            pass
-
-        return resp
+            actor = Actor.objects.get(pk=pk)
+            actor.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except Actor.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)

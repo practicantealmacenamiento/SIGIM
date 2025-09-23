@@ -15,6 +15,7 @@ export type Question = {
   order: number;
   choices?: Choice[];
   file_mode?: "image_ocr" | "ocr_only" | "image_only" | null; // puede venir ausente/null
+  semantic_tag?: string; // etiqueta semántica para lógica de negocio
 };
 
 export type NextResponse = Question | { mensaje: "Cuestionario finalizado." };

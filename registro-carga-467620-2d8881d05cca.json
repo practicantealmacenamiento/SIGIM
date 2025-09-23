@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "registro-carga-467620",
+  "private_key_id": "2d8881d05cca31c84d609a826ce8e9d6d1493644",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC67KstMvujzbYR\nVZJKq5748rTTJ7AYY0b7dUt8oNOEupHXiV0omv9Dgvk01+QEV//X5Vw/mDKjNGdZ\n021P4JTumPep1WSlQtGNJuhwcnLvVPvRDHmIjnwmo+FpjfAdEigwibBPaHvFR74+\nCYbheXugVVBwQvz+N4KjXuC5dE2lkPJk026zKN7cT9ZJMmUMfU1/GOyT4lb99U3O\n+nG5mS926xdAVXxL5FgQPSKFIYQ8DfarTaFwo1ymDkP7/J1XRF3nlekgr9OEvD6v\nOJYsyGea39kBRYoWhP/lCpnI0MDMTtlPyIUX573lio2V3QnR4mAjt0nuv/BndVec\nJJBZV9bTAgMBAAECggEAD9BjAP1ttaN7Mkc7i66uUeBytOSILOAFStPXEZGno3SH\nTyVTaNKIIwWLINHc/BMX1YOVhNnS+uS9k6dj+ZyF7ROq7Ebd729SPC9c/dpo59+Y\nOEzmYUuwrDI0KVJ1THhTRxv2+xjbU8roiOYUb7Hv6BYfqoe4UKeQmVK3D2mMAiQ2\nSQuIwGkr31GC4L8JFu+nenNVJsSRLL8MvoKHrKsAbFBbschujhzPNG8IKDspj0Df\n5yS4RLtgfmtaQ3ANBkSx0NBjmLgZsOqe9TKVl6ynPXRHLB8+wAvPaX3WoZdSXrvt\nwmzFyt1hw7sMOFxnd8X+9CeJ4GYmoxP5ydhh1RSrcQKBgQD620ZvTPrsbqFB5KBb\n/DqYNDTYwmlGQ2fnA9oVB+7HgAPXVBK1xlafTOJnlIAx8yIP8ndYMkUxNvMRtuLA\nA6O6g67il/R1PbEuxG2YTPz40lMOhZYKxvTIt/VeEwvELsKHbe5RcaTQXlQO2aJ5\nYW9mcJ5W5AHBPzI5hgR78DnkcQKBgQC+wdHNmvUekbl3l8GH4DsGRe+pbwBUGiQP\nknARv3aBNLboSDq52HA58NiLXuuHgHgkITncHl0wi5/c4nyJHhTBs6G/rakKzEfm\nQWLoKVXKbfukz77JPdqH9oTwwNRu3Xt9kU3URmx0F0cehGyfWDXnD/MQXS54+b0i\nBPEFusuBgwKBgQD4ddyiep2BNeX0TMzjrsQeYn8BPjVlCXhM4IzNDclbwZiMWtIZ\nRnQfXdhU/Umnr4fKQb4hFdFgeGtx3TFjO3ecUbcS6ayPvuXSS229Tmu0yyTGmltN\nG1fxwfp+DeE2k5XK64ADHMtAMl2RQ8/f5ziePuclarmuPLizLuEcHIhKkQKBgD6l\ngpSGhmeyrflTsnBAOMI3p5y6Yp48M4mVqw55FZ8bQ9KHHho4taqhqUwkMS/ABjS/\nYLQkmLA/upGdJA8X/PMcXkuH6dMtAZPh92yNXqprclBPFbYbhTBPypsSiPGb9Vlo\npenH8wgxON8R2GaAXrtypn3CTGfYhL+uZcVe8kSnAoGBAOn5bPaLKfba0K7Vmv8C\no3y1n2fYQcc7tfyh1jXO14rw+DktAcHn/p8WnUhB9Gl8RfrtC6QPTT8/7CP9eYKW\nUDtP1f+Cid3HDLX/ke1POPIEWC6N+YOtwIzKRXNLEpiqs8/M/qC7ZXrFJ1m3D5MG\nGRsUJxDac/PeeZKnj87/E4hS\n-----END PRIVATE KEY-----\n",
+  "client_email": "vision-ocr-service@registro-carga-467620.iam.gserviceaccount.com",
+  "client_id": "106344333869132911369",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/vision-ocr-service%40registro-carga-467620.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

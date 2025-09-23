@@ -1,52 +1,39 @@
 // lib/auth.ts
-import { http, cookies, setToken, clearToken } from "./http";
+import { http, cookies } from "./http";
+import { adminLogin, fetchWhoAmI } from "./api.admin";
+
+export async function login(username: string, password: string) {
+  const loginData = await adminLogin(username, password);
+  const me = await fetchWhoAmI(loginData.token);
+  return { token: loginData.token, user: me };
+}
 
 export type WhoAmI = {
   is_authenticated: boolean;
-  id: number | string | null;
+  id: number | null;
   username: string | null;
   is_staff: boolean;
 };
 
-// Login unificado: solo token; si necesitas sesión para panel admin, el endpoint ya la crea.
-export async function login(usernameOrEmail: string, password: string) {
-  // /api/admin/login crea sesión y devuelve token
-  const data = await http<{ token: string; user?: { username?: string; is_staff?: boolean } }>(
-    "admin/login",
-    { method: "POST", json: { username: usernameOrEmail, password }, useAdminBase: true, useSession: true }
-  );
-
-  setToken(data.token);
-  if (data?.user?.username) {
-    try { localStorage.setItem("auth_username", data.user.username); } catch {}
-  }
-
-  // Sincroniza cookie is_staff (útil para middleware/navbar si lo usas)
-  try {
-    const me = await whoami(); // ya usa token o cookie de sesión
-    cookies.set("is_staff", me.is_staff ? "1" : "0", 7);
-  } catch {}
-
+export async function loginApi(usernameOrEmail: string, password: string) {
+  const data = await http<{ token: string; user: { is_staff: boolean } }>("/api/login/", {
+    method: "POST",
+    json: { username: usernameOrEmail, password },
+  });
+  // Guardamos token e indicador de staff (el backend ya dejó sesión + csrftoken)
+  cookies.set("auth_token", data.token, 7);
+  cookies.set("is_staff", data.user.is_staff ? "1" : "0", 7);
   return data;
 }
 
 export async function whoami(): Promise<WhoAmI> {
-  // Siempre 200; mira el JSON. Usa sesión si existe; también manda Authorization si hay token
-  const me = await http<WhoAmI>("admin/whoami", { method: "GET", useAdminBase: true, useSession: true });
-  // Mantén username “cacheado” para la UI
-  try { localStorage.setItem("auth_username", me?.username || ""); } catch {}
-  // Señal de UI
-  cookies.set("is_staff", me?.is_staff ? "1" : "0", 7);
+  const me = await http<WhoAmI>("/api/whoami/", { method: "GET" });
+  cookies.set("is_staff", me.is_staff ? "1" : "0", 7); // sincroniza por si cambió
   return me;
 }
 
-export async function logout() {
-  // Pide al backend invalidar sesión y revocar tokens (idempotente)
-  try { await http("logout", { method: "POST", useSession: true }); } catch {}
-
-  // Limpieza agresiva en cliente (evita “datos fantasma” en Home)
-  clearToken();
-  try { localStorage.removeItem("auth_username"); } catch {}
+export function logoutClient() {
   cookies.del("auth_token");
   cookies.del("is_staff");
+  // La cookie de sesión (HttpOnly) se invalida en server o por expiración.
 }

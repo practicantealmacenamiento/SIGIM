@@ -1,7 +1,6 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useEffect, useMemo, useCallback } from "react";
+import { useEffect, useMemo, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useFormFlow } from "./useFormFlow";
 import Header from "./headerForm";
@@ -30,8 +29,8 @@ const getTextAns = (it: Item) =>
 const hasChoiceAns = (it: Item) =>
   Boolean((it as any)?.answer_choice) ||
   Boolean((it as any)?.selected_choice) ||
-  ((it as any)?.choicesSelected?.length ?? 0) > 0 ||
-  ((it as any)?.selectedOptions?.length ?? 0) > 0;
+  (((it as any)?.choicesSelected?.length ?? 0) > 0) ||
+  (((it as any)?.selectedOptions?.length ?? 0) > 0);
 
 const getChoiceText = (it: Item) => {
   const ac = (it as any)?.answer_choice;
@@ -44,7 +43,7 @@ const getChoiceText = (it: Item) => {
 };
 
 const hasFileAns = (it: Item) =>
-  ((it as any)?.files?.length ?? 0) > 0 ||
+  (((it as any)?.files?.length ?? 0) > 0) ||
   Boolean((it as any)?.file || (it as any)?.file_url || (it as any)?.filePath || (it as any)?.answer_file_path);
 
 const getFirstFileUrl = (it: Item) => {
@@ -55,7 +54,7 @@ const getFirstFileUrl = (it: Item) => {
 
 const isAnswered = (it: Item) => hasTextAns(it) || hasChoiceAns(it) || hasFileAns(it);
 
-export default function Formulario(props: { questionnaire_id?: string | null; submission_id?: string | null }) {
+function FormularioContent(props: { questionnaire_id?: string | null; submission_id?: string | null }) {
   const { questionnaire_id, submission_id } = props;
   const router = useRouter();
   const search = useSearchParams();
@@ -143,6 +142,37 @@ export default function Formulario(props: { questionnaire_id?: string | null; su
         <div className="max-w-3xl mx-auto">
           <Header respondidas={respondidas} total={total} fase="entrada" regulador="Prebel" />
           <div className="mt-8 p-6 text-lg">Cargando…</div>
+        </div>
+      </main>
+    );
+  }
+
+  // Si el formulario está finalizado, mostrar mensaje de éxito
+  if (finalizado) {
+    return (
+      <main className="min-h-screen px-6 md:px-8 py-10">
+        <div className="max-w-3xl mx-auto">
+          <div className="text-center p-8 border rounded-xl shadow bg-white dark:bg-slate-800">
+            <div className="text-6xl mb-4">✅</div>
+            <h2 className="text-2xl font-semibold mb-4">¡Formulario enviado exitosamente!</h2>
+            <p className="text-base text-slate-600 dark:text-white/70 mb-6">
+              Tu formulario ha sido procesado correctamente. Puedes realizar otro formulario o ir al panel de control.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-3 justify-center">
+              <button
+                onClick={() => router.push('/formulario')}
+                className="px-6 py-3 rounded-xl bg-skyBlue text-white font-medium hover:bg-skyBlue/90"
+              >
+                Realizar otro formulario
+              </button>
+              <button
+                onClick={() => router.push('/panel')}
+                className="px-6 py-3 rounded-xl border border-slate-300 dark:border-white/20 bg-white dark:bg-slate-800 text-slate-800 dark:text-white hover:bg-slate-50 dark:hover:bg-white/5"
+              >
+                Ir al panel de control
+              </button>
+            </div>
+          </div>
         </div>
       </main>
     );
@@ -282,8 +312,8 @@ export default function Formulario(props: { questionnaire_id?: string | null; su
                           {/* preview simple para texto/opción/archivo */}
                           {(it as any)?.answer_choice?.text ??
                             (it as any)?.selected_choice?.text ??
-                            getTextAns(it) ||
-                            (hasFileAns(it) ? "(adjunto)" : "(vacío)")}
+                            (getTextAns(it) ||
+                            (hasFileAns(it) ? "(adjunto)" : "(vacío)"))}
                         </div>
 
                         {hasFileAns(it) && (
@@ -334,5 +364,22 @@ export default function Formulario(props: { questionnaire_id?: string | null; su
         </div>
       )}
     </main>
+  );
+}
+
+export default function Formulario(props: { questionnaire_id?: string | null; submission_id?: string | null }) {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
+        <div className="mx-auto max-w-4xl px-6 py-8">
+          <div className="animate-pulse">
+            <div className="h-8 bg-gray-200 rounded mb-6"></div>
+            <div className="h-64 bg-gray-200 rounded"></div>
+          </div>
+        </div>
+      </div>
+    }>
+      <FormularioContent {...props} />
+    </Suspense>
   );
 }

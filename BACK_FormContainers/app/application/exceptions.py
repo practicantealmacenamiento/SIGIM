@@ -1,15 +1,30 @@
-from dataclasses import dataclass
+"""
+Excepciones de la capa de aplicación.
 
+Esta capa puede re-exportar excepciones del dominio para conveniencia,
+pero no debe definir excepciones que sean usadas por el dominio.
+"""
 
-@dataclass(eq=False)
-class DomainError(Exception):
-    """Error base de dominio (capa domain)."""
-    message: str
+# Re-exportar excepciones del dominio para conveniencia de la capa de aplicación
+from app.domain.exceptions import (
+    DomainException,
+    DomainError,  # Alias
+    ValidationError,
+    EntityNotFoundError,
+    BusinessRuleViolationError,
+    InvalidOperationError,
+    InvariantViolationError,
+)
 
-    def __str__(self) -> str:  # pragma: no cover
-        return self.message
+# Mantener compatibilidad con el código existente
+DomainError = DomainException
 
-
-class ValidationError(DomainError):
-    """Errores de validación de entidades/VOs."""
-    pass
+__all__ = [
+    "DomainException",
+    "DomainError",
+    "ValidationError", 
+    "EntityNotFoundError",
+    "BusinessRuleViolationError",
+    "InvalidOperationError",
+    "InvariantViolationError",
+]

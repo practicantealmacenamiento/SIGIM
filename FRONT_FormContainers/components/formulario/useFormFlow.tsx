@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Item, Question, NextResponse } from "@/types/form";
@@ -82,8 +81,25 @@ export function useFormFlow(
         // 3) cargar la primera pregunta
         const first = await getPrimeraPregunta(qid);
         if (cancelled) return;
+        
+        // Convertir AdminQuestion a Question
+        const questionForForm: Question = {
+          id: first.id,
+          text: first.text,
+          type: first.type,
+          required: first.required,
+          order: first.order,
+          choices: first.choices ? first.choices.map(c => ({
+            id: c.id,
+            text: c.text,
+            branch_to: c.branch_to || null
+          })) : undefined,
+          file_mode: first.file_mode as "image_ocr" | "ocr_only" | "image_only" | null,
+          semantic_tag: first.semantic_tag
+        };
+        
         setItems([{
-          q: first,
+          q: questionForForm,
           value: first.type === "date" ? today() : "",
           saved: false,
           editing: true,
@@ -167,7 +183,7 @@ export function useFormFlow(
         const files: File[] = it.files || [];
         if (files[0]) fdSet(fd, "answer_file", files[0]);
         if (isOcr(q)) {
-          const v = valueOverride ?? (it.value as string) || "";
+          const v = valueOverride ?? ((it.value as string) || "");
           fdSet(fd, "answer_text", v);
           savedValue = v;
         } else {
@@ -193,7 +209,23 @@ export function useFormFlow(
       let nextQ: Question | null = null;
       if ((resp as any)?.next_question) nextQ = (resp as any).next_question as Question;
       else if ((resp as any)?.next_question_id) {
-        try { nextQ = await getQuestionById((resp as any).next_question_id as string); } catch {}
+        try { 
+          const adminQ = await getQuestionById((resp as any).next_question_id as string);
+          nextQ = {
+            id: adminQ.id,
+            text: adminQ.text,
+            type: adminQ.type,
+            required: adminQ.required,
+            order: adminQ.order,
+            choices: adminQ.choices ? adminQ.choices.map(c => ({
+              id: c.id,
+              text: c.text,
+              branch_to: c.branch_to || null
+            })) : undefined,
+            file_mode: adminQ.file_mode as "image_ocr" | "ocr_only" | "image_only" | null,
+            semantic_tag: adminQ.semantic_tag
+          };
+        } catch {}
       } else if ((resp as any)?.id && (resp as any)?.text) {
         nextQ = resp as unknown as Question;
       }

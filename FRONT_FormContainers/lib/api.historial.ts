@@ -1,5 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "/api";
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "/api/").replace(/\/?$/, "");
 
 export type UUID = string;
 
@@ -42,42 +41,8 @@ export type HistorialItem = {
 };
 
 /* --------------------------- Utilidades fetch ---------------------------- */
-// 🔑 Lee token desde LS o cookie; si no hay, igual mandamos cookies de sesión
-const ADMIN_TOKEN_KEY = "admin_token";
-
-function getCookie(name: string): string | null {
-  if (typeof document === "undefined") return null;
-  const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
-  return m ? decodeURIComponent(m[1]) : null;
-}
-function getAuthToken(): string | null {
-  try {
-    if (typeof localStorage !== "undefined") {
-      // usa la clave que ya manejas en otras libs si existe
-      const t =
-        localStorage.getItem(ADMIN_TOKEN_KEY) ||
-        localStorage.getItem("AUTH_TOKEN") ||
-        localStorage.getItem("auth_token");
-      if (t) return t;
-    }
-  } catch {}
-  return getCookie("auth_token");
-}
-
-function hdr(method: string, init: RequestInit = {}): RequestInit {
-  const headers = new Headers(init.headers || {});
-  const tok = getAuthToken();
-  if (tok && !headers.has("Authorization")) headers.set("Authorization", `Token ${tok}`);
-  if (!headers.has("Accept")) headers.set("Accept", "application/json");
-
-  return {
-    ...init,
-    method,
-    headers,
-    credentials: "include",   // 🔒 manda cookies (sessionid, csrftoken, etc.)
-    cache: "no-store",
-    redirect: "manual",       // evita caer en HTML si el back redirige
-  };
+function hdr(method: string) {
+  return { method, credentials: "include" as const };
 }
 
 async function parseOrThrow<T>(res: Response, fallback: string): Promise<T> {
@@ -98,7 +63,7 @@ export async function fetchHistorial(params: {
   solo_completados?: boolean; // por defecto true
 }): Promise<HistorialItem[]> {
   const url = new URL(
-    `${API_BASE}historial/reguladores/`,
+    `${API_BASE}/historial/reguladores/`,
     typeof window !== "undefined" ? window.location.origin : "http://localhost"
   );
   if (params.fecha_desde) url.searchParams.set("fecha_desde", params.fecha_desde);
@@ -143,13 +108,8 @@ export type SubmissionDetail = {
 };
 
 export async function fetchSubmissionDetail(id: string): Promise<SubmissionDetail> {
-  // 🔧 slash final para evitar 301/308 (pierden Authorization)
-  const url = `${API_BASE}submissions/${id}/`;
-  const res = await fetch(url, hdr("GET"));
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(txt || "No se pudo cargar la submission");
-  }
+  const res = await fetch(`${API_BASE}/submissions/${id}/`, { credentials: "omit" });
+  if (!res.ok) throw new Error("No se pudo cargar la submission");
   return res.json();
 }
 
@@ -318,7 +278,7 @@ export function enrichHistorial(items: HistorialItem[]): HistorialRow[] {
         placa: displayPlacaFromItem(it),
         contenedor: it.contenedor ?? null,
         muelle: null,
-        estado: it.fase1 && it.fase2 ? "completo" : "pendiente",
+        estado: (it.fase1 && it.fase2 ? "completo" : "pendiente") as "completo" | "pendiente",
         fase1_id: f1?.id || null,
         fase2_id: f2?.id || null,
         fecha_entrada,
@@ -497,7 +457,7 @@ export async function searchActors(
   params: { tipo: "proveedor" | "transportista" | "receptor"; q?: string }
 ): Promise<ActorLite[]> {
   const url = new URL(
-    `${API_BASE}/actors/`,
+    `${API_BASE}/catalogos/actores/`,
     typeof window !== "undefined" ? window.location.origin : "http://localhost"
   );
   const tipoBack =

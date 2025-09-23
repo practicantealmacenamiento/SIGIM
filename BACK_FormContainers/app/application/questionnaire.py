@@ -5,7 +5,7 @@ from uuid import UUID
 from dataclasses import replace
 
 from app.application.commands import SaveAndAdvanceCommand, SaveAndAdvanceResult
-from app.application.exceptions import ValidationError, DomainError
+from app.domain.exceptions import ValidationError, EntityNotFoundError, BusinessRuleViolationError
 from app.domain.entities import Answer as DAnswer
 from app.domain.repositories import (
     AnswerRepository,
@@ -28,6 +28,7 @@ class QuestionnaireService:
 
     def __init__(
         self,
+        *,
         answer_repo: AnswerRepository,
         submission_repo: SubmissionRepository,
         question_repo: QuestionRepository,
@@ -44,11 +45,19 @@ class QuestionnaireService:
         # 1) Cargar aggregate raíz
         submission = self.submission_repo.get(cmd.submission_id)
         if not submission:
-            raise DomainError("Submission no encontrada.")
+            raise EntityNotFoundError(
+                message="Submission no encontrada.",
+                entity_type="Submission",
+                entity_id=str(cmd.submission_id)
+            )
 
         question = self.question_repo.get(cmd.question_id)
         if not question:
-            raise DomainError("Pregunta no encontrada.")
+            raise EntityNotFoundError(
+                message="Pregunta no encontrada.",
+                entity_type="Question",
+                entity_id=str(cmd.question_id)
+            )
 
         qtype = (getattr(question, "type", "") or "").lower()
         fmode = (getattr(question, "file_mode", "") or "").lower()
@@ -62,11 +71,18 @@ class QuestionnaireService:
         if has_choice:
             choice = self.choice_repo.get(cmd.answer_choice_id)
             if not choice:
-                raise ValidationError("La opción indicada no existe.")
+                raise EntityNotFoundError(
+                    message="La opción indicada no existe.",
+                    entity_type="Choice",
+                    entity_id=str(cmd.answer_choice_id)
+                )
             # Validar pertenencia
             qid = getattr(choice, "question_id", None) or getattr(getattr(choice, "question", None), "id", None)
             if qid and str(qid) != str(question.id):
-                raise ValidationError("La opción no pertenece a la pregunta indicada.")
+                raise BusinessRuleViolationError(
+                    message="La opción no pertenece a la pregunta indicada.",
+                    rule_name="choice_belongs_to_question"
+                )
 
         # 3) Reglas de adjuntos
         max_files = 0
@@ -74,7 +90,10 @@ class QuestionnaireService:
             max_files = 1 if fmode in {"image_ocr", "ocr_only"} else 2
 
         if has_uploads and max_files == 0:
-            raise ValidationError("Esta pregunta no acepta archivos adjuntos.")
+            raise BusinessRuleViolationError(
+                message="Esta pregunta no acepta archivos adjuntos.",
+                rule_name="question_file_upload_not_allowed"
+            )
 
         if has_uploads and len(cmd.uploads) > max_files:
             uploads_clamped = (cmd.uploads or [])[:max_files]
@@ -83,7 +102,10 @@ class QuestionnaireService:
         # 4) Requeridos
         if getattr(question, "required", False):
             if not (has_text or has_choice or has_uploads):
-                raise ValidationError("La pregunta es obligatoria.")
+                raise ValidationError(
+                    message="La pregunta es obligatoria.",
+                    field="answer"
+                )
 
         # 5) Truncar futuras respuestas si aplica
         if cmd.force_truncate_future:

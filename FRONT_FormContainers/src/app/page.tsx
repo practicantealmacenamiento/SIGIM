@@ -15,13 +15,21 @@ type HistItem = {
 type WhoAmI = {
   authenticated?: boolean;
   is_authenticated?: boolean;
-  username?: string | null;
+  username?: string;
   is_staff?: boolean;
 };
 
 /* ===== Helpers ===== */
 async function fetchJSON<T = any>(url: string): Promise<T> {
-  const res = await fetch(url, { credentials: "include", cache: "no-store" });
+  // Asegurar que las URLs tengan barra final para evitar 301
+  const normalizedUrl = url.includes('?') 
+    ? url.replace(/([^?])(\?)/, '$1/$2')  // Agregar barra antes del query string
+    : url.endsWith('/') ? url : url + '/';  // Agregar barra final si no la tiene
+    
+  const res = await fetch(normalizedUrl, {
+    credentials: "include",
+    cache: "no-store",
+  });
   if (!res.ok) {
     // En home no rompemos: entregamos vacío si es 401/403
     if (res.status === 401 || res.status === 403) return [] as unknown as T;
@@ -32,20 +40,23 @@ async function fetchJSON<T = any>(url: string): Promise<T> {
 }
 
 async function fetchWhoAmI(): Promise<{ ok: boolean; username: string; isStaff: boolean }> {
+  // Probamos con slash y sin slash (según tu server logs ambos existen)
   const tryOne = async (u: string) => {
     try {
       const data = (await fetchJSON<WhoAmI>(u)) || {};
       const authed = Boolean(data.is_authenticated ?? data.authenticated ?? false);
-      return { ok: authed, username: (data.username || "") as string, isStaff: Boolean(data.is_staff) };
+      return {
+        ok: authed,
+        username: data.username || "",
+        isStaff: Boolean(data.is_staff),
+      };
     } catch {
       return { ok: false, username: "", isStaff: false };
     }
   };
-  // 1) Ruta admin (si existe)
-  const a = await tryOne("/api/admin/whoami");
+  const a = await tryOne("/api/whoami/");
   if (a.ok) return a;
-  // 2) Fallback público (si lo tienes habilitado)
-  const b = await tryOne("/api/whoami");
+  const b = await tryOne("/api/whoami/");
   return b.ok ? b : { ok: false, username: "", isStaff: false };
 }
 
@@ -60,64 +71,27 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // ——————————————————————————————————
-  // 1) Confirmar sesión al montar
-  // ——————————————————————————————————
-  async function loadWho() {
-    const who = await fetchWhoAmI();
-    setAuthed(who.ok);
-    setUsername(who.ok ? who.username || "" : "");
-    setIsStaff(who.ok ? who.isStaff || false : false);
-  }
-
+  // 1) Confirmar sesión primero
   useEffect(() => {
     let mounted = true;
     (async () => {
-      await loadWho();
+      const who = await fetchWhoAmI();
       if (!mounted) return;
+      setAuthed(who.ok);
+      setUsername(who.username || "");
+      setIsStaff(who.isStaff || false);
     })();
-    return () => {
-      mounted = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { mounted = false; };
   }, []);
 
-  // ——————————————————————————————————
-  // 2) Revalidar whoami al volver al tab / cambiar visibilidad / cambios en LS
-  // ——————————————————————————————————
-  useEffect(() => {
-    const onFocus = () => loadWho();
-    const onVis = () => { if (document.visibilityState === "visible") loadWho(); };
-    const onStorage = (e: StorageEvent) => {
-      if (!e.key) return;
-      // si cualquiera de estas cambia, revalida
-      if (["admin_token", "AUTH_TOKEN", "auth_token", "auth_username"].includes(e.key)) {
-        loadWho();
-      }
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVis);
-    window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("storage", onStorage);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // ——————————————————————————————————
-  // 3) Cargar datos solo si está autenticado
-  // ——————————————————————————————————
+  // 2) Cargar datos solo si está autenticado
   useEffect(() => {
     if (authed !== true) {
-      // si aún no sabemos, dejamos el loader; si no authed, no pedimos y limpiamos estado
+      // si aún no sabemos, dejamos el loader; si no authed, no pedimos nada
       if (authed === false) {
         setLoading(false);
         setQus([]);
         setHist([]);
-        setUsername("");     // 👈 limpia saludo si no hay sesión
-        setIsStaff(false);
       }
       return;
     }
@@ -126,7 +100,7 @@ export default function Home() {
       try {
         setLoading(true);
         const [qData, hData] = await Promise.all([
-          fetchJSON<QuestionnaireItem[]>("/api/cuestionarios"),
+          fetchJSON<QuestionnaireItem[]>("/api/cuestionarios/"),
           fetchJSON<HistItem[]>("/api/historial/reguladores/?solo_completados=1"),
         ]);
         if (!mounted) return;
@@ -154,14 +128,14 @@ export default function Home() {
             <div>
               <p className="text-sm text-slate-500 dark:text-slate-300">{today}</p>
               <h1 className="mt-1 text-2xl md:text-3xl font-semibold text-slate-900 dark:text-white">
-                Hola{authed ? (username ? `, ${username}` : "") : ""} 👋
+                Hola{username ? `, ${username}` : ""} 👋
               </h1>
               <p className="mt-2 text-slate-600 dark:text-slate-300">
-                Accesos rápidos y últimos movimientos.
+                Accesos rápidos y último movimiento de tus formularios.
               </p>
             </div>
 
-            <div className="flex flex-wrap gap-3">
+            <div className="flex gap-3">
               <Link
                 href="/formulario"
                 className="inline-flex items-center justify-center rounded-xl bg-sky-600 hover:bg-sky-700 text-white px-4 py-2.5 text-sm font-medium shadow"
@@ -251,10 +225,16 @@ export default function Home() {
                           className="group flex items-center justify-between rounded-xl border border-slate-200 dark:border-white/10 px-4 py-3 hover:bg-slate-50 dark:hover:bg-white/5"
                         >
                           <div>
-                            <p className="font-medium text-slate-900 dark:text-white">{q.title}</p>
-                            <p className="text-xs text-slate-500 dark:text-slate-300">v{q.version}</p>
+                            <p className="font-medium text-slate-900 dark:text-white">
+                              {q.title}
+                            </p>
+                            <p className="text-xs text-slate-500 dark:text-slate-300">
+                              v{q.version}
+                            </p>
                           </div>
-                          <span className="text-sky-600 group-hover:translate-x-0.5 transition">➜</span>
+                          <span className="text-sky-600 group-hover:translate-x-0.5 transition">
+                            ➜
+                          </span>
                         </Link>
                       </li>
                     ))}
@@ -265,8 +245,12 @@ export default function Home() {
               {/* Últimos movimientos */}
               <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-800 shadow-sm">
                 <div className="px-5 py-4 border-b border-slate-100 dark:border-white/10">
-                  <h2 className="text-base font-semibold text-slate-900 dark:text-white">Últimos movimientos</h2>
-                  <p className="text-sm text-slate-500 dark:text-slate-300">Fases finalizadas recientemente.</p>
+                  <h2 className="text-base font-semibold text-slate-900 dark:text-white">
+                    Últimos movimientos
+                  </h2>
+                  <p className="text-sm text-slate-500 dark:text-slate-300">
+                    Fases finalizadas recientemente.
+                  </p>
                 </div>
                 <div className="p-5">
                   {loading && (
@@ -278,7 +262,9 @@ export default function Home() {
                   )}
 
                   {!loading && (hist?.length ?? 0) === 0 && (
-                    <p className="text-sm text-slate-500 dark:text-slate-300">Aún no hay registros finalizados.</p>
+                    <p className="text-sm text-slate-500 dark:text-slate-300">
+                      Aún no hay registros finalizados.
+                    </p>
                   )}
 
                   <ul className="space-y-3">
@@ -297,14 +283,19 @@ export default function Home() {
                           </p>
                         </div>
                         <span className="text-xs text-slate-500 dark:text-slate-300">
-                          {h.ultima_fecha_cierre ? new Date(h.ultima_fecha_cierre).toLocaleString() : "-"}
+                          {h.ultima_fecha_cierre
+                            ? new Date(h.ultima_fecha_cierre).toLocaleString()
+                            : "-"}
                         </span>
                       </li>
                     ))}
                   </ul>
 
                   <div className="mt-4 text-right">
-                    <Link className="text-sm text-sky-600 hover:text-sky-700" href="/historial">
+                    <Link
+                      className="text-sm text-sky-600 hover:text-sky-700"
+                      href="/historial"
+                    >
                       Ver todo el historial →
                     </Link>
                   </div>
@@ -346,3 +337,5 @@ export default function Home() {
     </div>
   );
 }
+
+

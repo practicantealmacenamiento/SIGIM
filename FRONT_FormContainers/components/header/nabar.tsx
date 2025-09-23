@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
-import { useEffect, useRef, useState, useCallback } from "react";
+import { usePathname } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import { adminTokenKey, clearAdminToken, adminLogout } from "@/lib/api.admin";
 
 /**
@@ -33,8 +33,7 @@ function truthyCookie(v: string | null): boolean {
 }
 
 export default function Navbar() {
-  const pathname = usePathname() || "/";
-  const search = useSearchParams();
+  const pathname = usePathname();
 
   // ===== Auth (cookies/LS) =====
   const [isAuth, setIsAuth] = useState(false);
@@ -154,29 +153,17 @@ export default function Navbar() {
     };
   }, [open]);
 
-  // ===== Login href con next COMPLETO (path + ?query + #hash) =====
-  const buildNext = useCallback(() => {
-    const q = search?.toString() ? `?${search!.toString()}` : "";
-    const h = typeof window !== "undefined" ? window.location.hash || "" : "";
-    return `${pathname}${q}${h}`;
-  }, [pathname, search]);
-
-  const loginHref = `/admin/login?next=${encodeURIComponent(buildNext())}`;
+  const loginHref = `/login?next=${encodeURIComponent(pathname || "/")}`;
 
   async function onLogout() {
-  try {
-    // Cierra sesión global (fuera de admin)
-    await fetch("/api/logout/", {
-      method: "POST",
-      credentials: "include",
-      cache: "no-store",
-    });
-  } finally {
-    try { clearAdminToken(); } catch {}
-    document.cookie = "is_staff=0; Path=/; Max-Age=60; SameSite=Lax";
-    window.location.replace(loginHref); // replace evita loops en history
+    try {
+      await adminLogout(); // intenta cerrar sesión en back (si existe)
+    } finally {
+      try { clearAdminToken(); } catch {}
+      document.cookie = "is_staff=0; Path=/; Max-Age=60; SameSite=Lax";
+      window.location.replace(loginHref); // sin loop (replace)
+    }
   }
-}
 
   return (
     <header className="w-full border-b bg-background">
@@ -301,8 +288,8 @@ export default function Navbar() {
           ) : (
             <Link
               href={loginHref}
-              className={`${baseLink} ${isActive("/admin/login") ? activeLink : ""}`}
-              aria-current={isActive("/admin/login") ? "page" : undefined}
+              className={`${baseLink} ${isActive("/login") ? activeLink : ""}`}
+              aria-current={isActive("/login") ? "page" : undefined}
               title="Iniciar sesión"
             >
               Iniciar sesión

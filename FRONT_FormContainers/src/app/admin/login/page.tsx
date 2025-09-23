@@ -1,64 +1,48 @@
 "use client";
-import { useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+
+import { useState, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
+import { adminLogin } from "@/lib/api.admin";
 import { CARD, INPUT } from "@/lib/ui";
 
-/* Utilidad simple para leer cookies (CSRF si aplica) */
-function getCookie(name: string): string | null {
-  if (typeof document === "undefined") return null;
-  const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
-  return m ? decodeURIComponent(m[1]) : null;
-}
-
-/* POST directo al backend vía rewrite de Next (sin forzar barra final) */
-async function loginDirect(username: string, password: string) {
-  const csrf = getCookie("csrftoken");
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (csrf) headers["X-CSRFToken"] = csrf;
-
-  const res = await fetch("/api/admin/login", {
+async function loginDirect(u: string, p: string) {
+  const res = await fetch("/api/login/", {
     method: "POST",
-    credentials: "include",       // recibe Set-Cookie
-    cache: "no-store",            // evita cache raras en dev
-    redirect: "manual",           // no sigas 30x (corta 308/301 automáticos)
-    headers,
-    body: JSON.stringify({ username, password }),
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: u, password: p }),
   });
-
-  // Algunos adaptadores devuelven opaqueredirect con redirect: "manual" → cookie ya quedó
-  const redirected = res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400);
-  if (!res.ok && !redirected) {
-    let msg = "Error de inicio de sesión";
+  if (!res.ok) {
     try {
       const j = await res.json();
-      msg = j?.detail || j?.error || msg;
+      throw new Error(j?.detail || j?.error || res.statusText || "Error de inicio de sesión");
     } catch {
-      try { msg = (await res.text()) || msg; } catch {}
+      const t = await res.text().catch(() => "");
+      throw new Error(t || res.statusText || "Error de inicio de sesión");
     }
-    throw new Error(msg);
   }
+  await res.json().catch(() => ({}));
 }
 
-/* Sanea el "next": nunca volver a /login */
+/* Sanea el "next": nunca permitir volver a /login (evita loops) */
 function safeNextUrl(nextRaw: string | null): string {
-  if (!nextRaw) return "/admin"; // puedes elegir "/" si prefieres
+  if (!nextRaw) return "/";
   try {
     const u = new URL(nextRaw, window.location.origin);
-    if (u.origin !== window.location.origin) return "/admin";
-    const p = u.pathname || "/";
-    if (p.startsWith("/admin/login") || p === "/login") return "/admin";
-    return p + u.search + u.hash;
+    if (u.origin !== window.location.origin) return "/";
+    const path = u.pathname || "/";
+    if (path.startsWith("/login")) return "/";
+    return path + u.search + u.hash;
   } catch {
-    return "/admin";
+    return "/";
   }
 }
 
-export default function AdminLoginPage() {
+function AdminLoginForm() {
   const [u, setU] = useState("");
   const [p, setP] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const router = useRouter();
   const search = useSearchParams();
 
   async function onSubmit(e: React.FormEvent) {
@@ -68,82 +52,25 @@ export default function AdminLoginPage() {
     setErr(null);
 
     try {
-      // Solo un flujo: POST directo. No llamamos adminLogin() para no disparar whoami.
-      await loginDirect(u, p);
-
-      // Opcional: “calienta” la sesión con whoami SIN slash (evita 308)
-      // Puedes comentar esto si tu guard ya lo hace por su cuenta.
-      await fetch("/api/admin/whoami", {
-        credentials: "include",
-        cache: "no-store",
-        redirect: "manual",
-      }).catch(() => { /* no bloquea el login */ });
-
-      // Asegura flush de cookies y refresco de RSC
-      await new Promise((r) => setTimeout(r, 20));
-      const next = safeNextUrl(search?.get("next"));
-      router.replace(next);
-      router.refresh();
-    } catch (e: any) {
-      setErr(e?.message || "Error de inicio de sesión");
-      setLoading(false);
-    }
-  }
-
-  // Si ya hay sesión, no muestres el form: redirige a next o /admin
-  useEffect(() => {
-    const already = getCookie("sessionid") || getCookie("auth_token");
-    if (already) {
-      const next = safeNextUrl(search?.get("next"));
-      router.replace(next);
-      router.refresh();
-    }
-  }, [router, search]);
-
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (loading) return;
-    setLoading(true);
-    setErr(null);
-
-    try {
-      const csrf = getCookie("csrftoken");
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (csrf) headers["X-CSRFToken"] = csrf;
-
-      // POST directo (tu versión actual está OK)
-      const res = await fetch("/api/admin/login", {
-        method: "POST",
-        credentials: "include",
-        cache: "no-store",
-        redirect: "manual",
-        headers,
-        body: JSON.stringify({ username: u, password: p }),
-      });
-
-      const redirected = res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400);
-      if (!res.ok && !redirected) {
-        let msg = "Error de inicio de sesión";
-        try {
-          const j = await res.json();
-          msg = j?.detail || j?.error || msg;
-        } catch {
-          try { msg = (await res.text()) || msg; } catch {}
-        }
-        throw new Error(msg);
+      // 1) flujo normal
+      await adminLogin(u, p);
+    } catch (e1: any) {
+      // 2) fallback blindado (garantiza cookies/sesión aunque falle whoami)
+      try {
+        await loginDirect(u, p);
+      } catch (e2: any) {
+        setErr(e2?.message || e1?.message || "Error de inicio de sesión");
+        setLoading(false);
+        return;
       }
-
-      // Calentar sesión (opcional)
-      await fetch("/api/admin/whoami", { credentials: "include", cache: "no-store", redirect: "manual" }).catch(() => {});
-      await new Promise((r) => setTimeout(r, 20));
-
-      const next = safeNextUrl(search?.get("next"));
-      router.replace(next);
-      router.refresh();
-    } catch (e: any) {
-      setErr(e?.message || "Error de inicio de sesión");
-      setLoading(false);
     }
+
+    // micro-delay para asegurar flush de cookies en algunos navegadores
+    await new Promise((r) => setTimeout(r, 10));
+
+    const next = safeNextUrl(search?.get("next"));
+    // replace con reload de la app ya autenticada
+    window.location.replace(next);
   }
 
   return (
@@ -191,5 +118,28 @@ export default function AdminLoginPage() {
         </form>
       </div>
     </main>
+  );
+}
+
+export default function AdminLoginPage() {
+  return (
+    <Suspense fallback={
+      <main className="min-h-[calc(100vh-80px)] w-full px-6 md:px-8 py-10">
+        <div className="mx-auto max-w-[520px]">
+          <div className={`${CARD} p-8 md:p-10`}>
+            <h1 className="text-2xl md:text-3xl font-semibold mb-6">Acceso administración</h1>
+            <div className="animate-pulse">
+              <div className="h-4 bg-gray-200 rounded mb-2"></div>
+              <div className="h-10 bg-gray-200 rounded mb-4"></div>
+              <div className="h-4 bg-gray-200 rounded mb-2"></div>
+              <div className="h-10 bg-gray-200 rounded mb-6"></div>
+              <div className="h-11 bg-gray-200 rounded"></div>
+            </div>
+          </div>
+        </div>
+      </main>
+    }>
+      <AdminLoginForm />
+    </Suspense>
   );
 }

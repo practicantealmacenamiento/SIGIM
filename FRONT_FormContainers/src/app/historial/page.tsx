@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   fetchHistorialEnriched,
@@ -50,8 +50,10 @@ function normalizeRows(input: HistorialRow[]): HistorialRow[] {
 }
 
 /* ——— key única para React ——— */
-function rowKey(r: HistorialRow) {
-  return `${r.regulador_id ?? "reg"}::${r.fase1_id ?? "_"}::${r.fase2_id ?? "_"}::${r.placa ?? "_"}`;
+function rowKey(r: HistorialRow, index?: number) {
+  // Usar un identificador único que incluya el índice para evitar duplicados
+  const baseKey = `${r.regulador_id ?? "reg"}::${r.fase1_id ?? "_"}::${r.fase2_id ?? "_"}::${r.placa ?? "_"}`;
+  return index !== undefined ? `${baseKey}::${index}` : baseKey;
 }
 
 function Badge({
@@ -103,7 +105,7 @@ function setQuery(router: ReturnType<typeof useRouter>, params: URLSearchParams,
   router.replace(`?${p.toString()}`);
 }
 
-export default function HistorialPage() {
+function HistorialContent() {
   const router = useRouter();
   const urlParams = useSearchParams();
 
@@ -297,11 +299,14 @@ export default function HistorialPage() {
     setPage(1);
   }
   function copyLink() {
-    const qs = new URLSearchParams({
+    const params: Record<string, string> = {
       desde, hasta, estado, q: search, actor_tipo: actorTipo,
       actor_text: actorSel ? "" : actorInput, actor_id: actorSel?.id || "", actor_name: actorSel?.nombre || "",
-      actor_tipo_api: actorSel?.tipo || "", sort, dir, page: String(page), pageSize: String(pageSize), view, auto: autoRefresh ? "1" : "",
-    });
+      actor_tipo_api: actorSel?.tipo || "", dir: dir || "", page: String(page), pageSize: String(pageSize), view, auto: autoRefresh ? "1" : "",
+    };
+    if (sort) params.sort = sort;
+    
+    const qs = new URLSearchParams(params);
     navigator.clipboard.writeText(`${location.pathname}?${qs.toString()}`).then(() => alert("Enlace copiado"));
   }
 
@@ -333,10 +338,10 @@ export default function HistorialPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
+              {rows.map((r, idx) => {
                 const f1 = r.fase1_id, f2 = r.fase2_id;
                 return (
-                  <tr key={rowKey(r)} className="border-t border-slate-200/70 dark:border-white/10">
+                  <tr key={rowKey(r, idx)} className="border-t border-slate-200/70 dark:border-white/10">
                     <td className="px-4 py-3 whitespace-nowrap">{fmtDateTime(r.ultima_fecha_cierre)}</td>
                     <td className="px-4 py-3 font-medium">{r.placa || "SIN PLACA"}</td>
                     <td className="px-4 py-3 truncate max-w-[220px]">{r.proveedor?.nombre || r.proveedor?.documento || "—"}</td>
@@ -563,10 +568,10 @@ export default function HistorialPage() {
           Table
         ) : (
           <ul className="grid gap-4">
-            {rows.map((r) => {
+            {rows.map((r, idx) => {
               const f1 = r.fase1_id, f2 = r.fase2_id;
               return (
-                <li key={rowKey(r)} className={`${CARD} p-5 md:p-6 transition hover:shadow-md`}>
+                <li key={rowKey(r, idx)} className={`${CARD} p-5 md:p-6 transition hover:shadow-md`}>
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 md:gap-3 flex-wrap">
@@ -621,3 +626,24 @@ export default function HistorialPage() {
   );
 }
 
+export default function HistorialPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
+        <main className="mx-auto max-w-7xl px-6 py-8">
+          <div className="animate-pulse">
+            <div className="h-8 bg-gray-200 rounded mb-6"></div>
+            <div className="h-32 bg-gray-200 rounded mb-6"></div>
+            <div className="space-y-4">
+              <div className="h-24 bg-gray-200 rounded"></div>
+              <div className="h-24 bg-gray-200 rounded"></div>
+              <div className="h-24 bg-gray-200 rounded"></div>
+            </div>
+          </div>
+        </main>
+      </div>
+    }>
+      <HistorialContent />
+    </Suspense>
+  );
+}

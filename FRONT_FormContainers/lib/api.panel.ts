@@ -1,89 +1,57 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { UUID } from "@/types/form";
 
-// ======================
-// Base URL
-// ======================
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "/api/").replace(/\/?$/, "/");
 
-// ======================
-// Cookies + Token helpers
-// ======================
-function getCookie(name: string): string | null {
-  if (typeof document === "undefined") return null;
-  const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
-  return m ? decodeURIComponent(m[1]) : null;
-}
-
-/** Lee SIEMPRE el token de usuario (no API key global) */
-function getAdminToken(): string | null {
-  try {
-    if (typeof window !== "undefined") {
-      const ls =
-        localStorage.getItem("admin_token") ||
-        localStorage.getItem("AUTH_TOKEN") ||
-        localStorage.getItem("auth_token");
-      if (ls) return ls;
-    }
-  } catch {}
-  return getCookie("auth_token");
-}
-
-/** Envoltura que añade Authorization (Token ...) para TODOS los métodos */
-function withAuth(init?: RequestInit): RequestInit {
-  const headers = new Headers(init?.headers || {});
-  const token = getAdminToken();
-  if (token && !headers.has("Authorization")) headers.set("Authorization", `Token ${token}`);
-
-  const method = (init?.method || "GET").toUpperCase();
-  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
-    const csrf = getCookie("csrftoken");
-    if (csrf && !headers.has("X-CSRFToken")) headers.set("X-CSRFToken", csrf);
-    if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  }
-
-  if (!headers.has("Accept")) headers.set("Accept", "application/json");
-
-  return { ...init, headers, credentials: "include", cache: "no-store", redirect: "manual" };
-}
+// Usar las mismas credenciales que el resto de la aplicación
+const authHeaders = (method: string, extra: Record<string, string> = {}) => {
+  return { ...extra };
+};
 
 async function parseOrThrow<T>(res: Response, fallback: string): Promise<T> {
-  if (!res.ok) {
-    const ct = res.headers.get("content-type") || "";
-    let data: any = null;
-    try { data = ct.includes("application/json") ? await res.json() : await res.text(); } catch {}
-    const msg = (data && (data.detail || data.error)) || res.statusText || fallback;
-    const err: any = new Error(msg);
-    err.status = res.status;
-    err.data = data;
-    throw err;
-  }
-  const ct = res.headers.get("content-type") || "";
-  if (ct.includes("application/json")) return (await res.json()) as T;
-  if (ct.startsWith("text/")) return (await res.text()) as unknown as T;
-  return (await res.blob()) as unknown as T;
+  if (res.ok) return res.json();
+  let msg = fallback;
+  try {
+    const txt = await res.text();
+    try {
+      const j = JSON.parse(txt);
+      msg = (j?.detail || j?.error || txt || fallback) as string;
+    } catch {
+      msg = txt || fallback;
+    }
+  } catch {}
+  throw new Error(msg);
 }
 
-// ======================
-// Tipos del Panel
-// ======================
+// ==== Tipos ligeros para el panel ====
 export type SubmissionRow = {
   id: UUID;
   placa_vehiculo: string | null;
   regulador_id: UUID | null;
   fecha_cierre: string | null;
-  muelle: string | null;
+  muelle: string | null; // <-- nuevo
 };
 
-// ===== Helpers locales para extraer "muelle" desde answers =====
+// ==== Helpers (solo front) ====
+// Normaliza texto para búsqueda flexible (sin tildes y en minúsculas)
 const norm = (s: string) =>
   (s || "")
     .normalize("NFD")
+    // Evita dependencia de \p{Diacritic} en navegadores viejos
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
 
+// Intenta extraer el muelle desde answers[] sin depender de cambios en el back.
+// Busca primero por semantic_tag === "muelle" (si algún día lo agregas) y si no,
+// por coincidencia de texto "muelle" en la pregunta.
 function extraerMuelle(answers: any[] | undefined | null): string | null {
-  if (!Array.isArray(answers) || !answers.length) return null;
+  if (!Array.isArray(answers)) return null;
+
+  const norm = (s: string) =>
+    (s || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .trim();
 
   const ts = (a: any) => {
     const t =
@@ -94,66 +62,74 @@ function extraerMuelle(answers: any[] | undefined | null): string | null {
   };
 
   const ordenadas = [...answers].sort((a, b) => ts(b) - ts(a));
+
   for (const a of ordenadas) {
     const q = a?.question || a?.question_data || {};
     const tag = String(q?.semantic_tag ?? "").toLowerCase().trim();
     const qtext = norm(String(q?.text ?? q?.label ?? ""));
+
+    // 👇 Aquí está el cambio importante
     const contieneMuelle = tag === "muelle" || qtext.includes("muelle");
+
     if (contieneMuelle) {
-      const choiceText = (a?.answer_choice?.text || a?.answer_choice_text || "").toString().trim();
-      const text = (a?.answer_text || "").toString().trim();
-      const val = choiceText || text;
-      if (val) return val;
+      const choiceText =
+        a?.answer_choice?.text ??
+        a?.answer_choice?.label ??
+        a?.choice?.text ??
+        a?.choice_label ??
+        null;
+
+      const text = a?.answer_text ?? a?.text ?? null;
+
+      const respuesta = (choiceText ?? text ?? "").toString().trim();
+      return respuesta || null;
     }
   }
   return null;
 }
 
-// ======================
-// Endpoints usados por el Panel
-// ======================
-
-/**
- * Lista Fase 1 finalizados que aún no tienen Fase 2 final (pendientes de salida).
- * Usa /api/submissions/ con filtros del backend.
- */
+// ==== Listado Fase 1 finalizados (pendientes de Fase 2) ====
 export async function listarFase1Finalizados(params: {
   search?: string;
-  page?: number;      // reservado si luego paginas en back
-  pageSize?: number;  // reservado si luego paginas en back
+  page?: number;
+  pageSize?: number;
 }): Promise<{ results: SubmissionRow[]; count: number }> {
-  const { search = "" } = params;
-  const url = new URL(`${API_BASE}submissions/`, typeof window !== "undefined" ? window.location.origin : "http://localhost");
+  const { search = "", page = 1, pageSize = 20 } = params;
+
+  const url = new URL(`${API_BASE}submissions/`, window.location.origin);
   url.searchParams.set("tipo_fase", "entrada");
   url.searchParams.set("solo_finalizados", "1");
-  url.searchParams.set("solo_pendientes_fase2", "1"); // usa la anotación del repo
+  url.searchParams.set("solo_pendientes_fase2", "1"); // 👈 usa el filtro especial del back
   if (search.trim()) url.searchParams.set("placa_vehiculo", search.trim());
 
-  const res = await fetch(url.toString(), withAuth({ method: "GET" }));
-  const list = await parseOrThrow<any[]>(res, "No se pudieron listar Fase 1");
+  const res = await fetch(url.toString(), { credentials: "include", headers: authHeaders("GET") });
+  const list = await parseOrThrow<any[]>(res, "No se pudo cargar el listado");
 
+  // Mapeo mínimo + paginación en cliente
   const mapped: SubmissionRow[] = list.map((s: any) => ({
     id: s.id,
     placa_vehiculo: s.placa_vehiculo ?? null,
     regulador_id: s.regulador_id ?? null,
     fecha_cierre: s.fecha_cierre ?? null,
-    muelle: extraerMuelle(s.answers) ?? null,
+    muelle: extraerMuelle(s.answers),
   }));
-  return { results: mapped, count: mapped.length };
+
+  const start = (page - 1) * pageSize;
+  const end = start + pageSize;
+
+  return { results: mapped.slice(start, end), count: mapped.length };
 }
 
-/**
- * Busca un borrador de Fase 2 por placa.
- * Consulta /api/submissions/?tipo_fase=salida&placa_vehiculo=...&incluir_borradores=1
- */
+// ==== Buscar Fase 2 por placa (borrador/no finalizada)====
 export async function buscarFase2PorPlaca(placa: string): Promise<SubmissionRow | null> {
-  const url = new URL(`${API_BASE}submissions/`, typeof window !== "undefined" ? window.location.origin : "http://localhost");
+  const url = new URL(`${API_BASE}submissions/`, window.location.origin);
   url.searchParams.set("tipo_fase", "salida");
-  url.searchParams.set("incluir_borradores", "1");
+  url.searchParams.set("incluir_borradores", "1"); // para traer no finalizadas
   url.searchParams.set("placa_vehiculo", placa);
 
-  const res = await fetch(url.toString(), withAuth({ method: "GET" }));
+  const res = await fetch(url.toString(), { credentials: "include", headers: authHeaders("GET") });
   const list = await parseOrThrow<any[]>(res, "No se pudo buscar Fase 2");
+  // Quédate con la más reciente NO finalizada
   const draft = list.find((s: any) => s.finalizado === false) || null;
 
   return draft
@@ -162,31 +138,30 @@ export async function buscarFase2PorPlaca(placa: string): Promise<SubmissionRow 
         placa_vehiculo: draft.placa_vehiculo ?? null,
         regulador_id: draft.regulador_id ?? null,
         fecha_cierre: draft.fecha_cierre ?? null,
-        muelle: extraerMuelle(draft.answers) ?? null,
+        muelle: extraerMuelle(draft.answers) ?? null, // en Fase 2 normalmente no aplica
       }
     : null;
 }
 
-/**
- * Crea una Fase 2 (salida) enlazada a la Fase 1 (regulador_id).
- * POST /api/submissions
- */
+// ==== Crear Fase 2 ====
 export async function crearSubmissionFase2(payload: {
   questionnaire_id_fase2: UUID;
   placa_vehiculo: string;
   regulador_id?: UUID | null;
 }): Promise<SubmissionRow> {
   const body = {
-    questionnaire: payload.questionnaire_id_fase2,
+    questionnaire_id: payload.questionnaire_id_fase2,
     tipo_fase: "salida",
     placa_vehiculo: payload.placa_vehiculo,
     regulador_id: payload.regulador_id ?? null,
   };
 
-  const res = await fetch(`${API_BASE}submissions/`, withAuth({
+  const res = await fetch(`${API_BASE}submissions/`, {
     method: "POST",
+    credentials: "include",
+    headers: authHeaders("POST", { "Content-Type": "application/json" }),
     body: JSON.stringify(body),
-  }));
+  });
   const data = await parseOrThrow<any>(res, "No se pudo crear la Fase 2");
 
   return {
@@ -194,6 +169,7 @@ export async function crearSubmissionFase2(payload: {
     placa_vehiculo: data.placa_vehiculo ?? null,
     regulador_id: data.regulador_id ?? null,
     fecha_cierre: data.fecha_cierre ?? null,
-    muelle: null,
+    muelle: null, // Fase 2 recién creada no trae muelle
   };
 }
+

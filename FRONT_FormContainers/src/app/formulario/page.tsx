@@ -1,11 +1,11 @@
 "use client";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import Formulario from "@/components/formulario";
 
 const Q_FASE1 = process.env.NEXT_PUBLIC_Q_FASE1_ID || null;
 
-export default function FormularioPage() {
+function FormularioContent() {
   const sp = useSearchParams();
 
   // undefined = aún no resolvimos; null/string = resuelto
@@ -26,6 +26,14 @@ export default function FormularioPage() {
   }
 
   return <Formulario questionnaire_id={qid} submission_id={sid} />;
+}
+
+export default function FormularioPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-lg">Cargando…</div>}>
+      <FormularioContent />
+    </Suspense>
+  );
 }
 
 

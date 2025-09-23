@@ -1,6 +1,3 @@
-/* eslint-disable react-hooks/exhaustive-deps */
-/* eslint-disable react-hooks/rules-of-hooks */
-/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 import { useCallback, useMemo, useState, useId, useEffect, useRef } from "react";
 import { CARD, isImageOnly, isOcr, today, validateFiles } from "@/lib/ui";
@@ -32,6 +29,7 @@ type Props = {
   setItems: React.Dispatch<React.SetStateAction<Item[]>>;
   retryOCR: (i: number) => void;
   setActor?: (i: number, actor: ActorLite) => void;
+  errorMsg?: string | null;
 };
 
 const tagOf = (q: any) => String(q?.semantic_tag || "none").toLowerCase();
@@ -69,17 +67,18 @@ function isValidISO6346(code: string): boolean {
 export default function QuestionCard({
   it, idx, isLast, lastRef, sending,
   setVal, onSelectChoice, onEnter, onFilesChange, removeFile,
-  submitOne, setItems, retryOCR, setActor,
+  submitOne, setItems, retryOCR, setActor, errorMsg,
 }: Props) {
   const uid = useId();
   const q = it.q;
-  if (!q) return null;
-
+  
+  // Variables básicas
   const active = it.editing;
-  const disabled = !active || sending;   // se mantiene para inputs no-cátalogo
+  const disabled = !active || sending;
   const busy = sending && active;
-
-  const slug = useMemo(() => tagOf(q), [q]);
+  
+  // Todos los hooks deben ir antes del early return
+  const slug = useMemo(() => q ? tagOf(q) : "none", [q]);
   const isCatalog = useMemo(() => isActorTag(slug), [slug]);
 
   const sectionClass = useMemo(
@@ -165,7 +164,7 @@ export default function QuestionCard({
   // Estado OCR general (sin cambios)
   const ocrStatusDisplay = useMemo(() => {
     const raw: any = (it as any)?.ocr;
-    if (!raw) return null;
+    if (!raw) return undefined;
     if (typeof raw === "string") return raw;
     try {
       const chips: string[] = [];
@@ -174,7 +173,7 @@ export default function QuestionCard({
       if (raw.contenedor) chips.push(`contenedor: ${raw.contenedor}`);
       const meta = chips.join(" · ");
       const txt = (raw.ocr_raw as string) || (it.value as string) || "";
-      return [txt, meta].filter(Boolean).join(" · ") || null;
+      return [txt, meta].filter(Boolean).join(" · ") || undefined;
     } catch {
       try { return JSON.stringify(raw); } catch { return String(raw); }
     }

@@ -6,7 +6,7 @@ from typing import List, Optional, Dict
 from uuid import UUID
 
 from app.domain.entities import Answer
-from app.application.exceptions import DomainError
+from app.domain.exceptions import EntityNotFoundError, ValidationError, DomainException
 from app.domain.repositories import AnswerRepository, SubmissionRepository, QuestionRepository, UserPK
 from app.application.commands import CreateAnswerCommand, UpdateAnswerCommand, UNSET
 from app.domain.ports import FileStorage
@@ -62,7 +62,11 @@ class AnswerService:
         """
         entity = self.repo.get(cmd.id)
         if not entity:
-            raise DomainError(f"Answer {cmd.id} no encontrada.")
+            raise EntityNotFoundError(
+                message=f"Answer {cmd.id} no encontrada.",
+                entity_type="Answer",
+                entity_id=str(cmd.id)
+            )
 
         # Texto
         if cmd.answer_text is not UNSET:
@@ -152,7 +156,11 @@ class SubmissionService:
         """
         sub = self.submission_repo.get(submission_id)
         if not sub:
-            raise DomainError("Submission no encontrada.")
+            raise EntityNotFoundError(
+                message="Submission no encontrada.",
+                entity_type="Submission",
+                entity_id=str(submission_id)
+            )
 
         updates = {
             "finalizado": True,
@@ -214,7 +222,11 @@ class SubmissionService:
         """
         submission = self.submission_repo.get(submission_id)
         if not submission:
-            raise DomainError("Submission no encontrada.")
+            raise EntityNotFoundError(
+                message="Submission no encontrada.",
+                entity_type="Submission", 
+                entity_id=str(submission_id)
+            )
 
         answers = self.answer_repo.list_by_submission(submission_id)
         q_ids = list({a.question_id for a in answers})

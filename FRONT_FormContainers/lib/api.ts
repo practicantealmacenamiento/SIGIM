@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * API principal del formulario (cualquier usuario autenticado).
  * Compatibilizado con los imports de useFormFlow:
@@ -54,7 +53,7 @@ export async function fetchApi<T = any>(
   const headers = new Headers(init.headers || {});
   const method = (init.method || "GET").toUpperCase();
 
-  // Token DRF desde cookie (si lo emitió /api/admin/login/)
+  // Token DRF desde cookie (si lo emitió /api/login/)
   const token = getCookie("auth_token");
   if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Token ${token}`);
@@ -151,10 +150,17 @@ export async function createSubmission(payload: {
   tipo_fase: string;
   regulador_id?: string;
 }) {
+  // Normalizar el payload para que use questionnaire_id
+  const normalizedPayload = {
+    questionnaire_id: payload.questionnaire,
+    tipo_fase: payload.tipo_fase,
+    regulador_id: payload.regulador_id,
+  };
+  
   return fetchApi<Submission>("submissions/", {
     method: "POST",
     headers: baseHeaders(true),
-    body: JSON.stringify(payload),
+    body: JSON.stringify(normalizedPayload),
   });
 }
 
@@ -174,7 +180,7 @@ export async function verificarImagen(data: { question_id: string; imagen: File 
 
 /** 6) Finalizar submission — nombre que espera tu hook. */
 export async function finalizarSubmission(id: string) {
-  return fetchApi<{ mensaje: string; [k: string]: any }>(`submissions/${id}/finalizar/`, {
+  return fetchApi<{ mensaje: string; [k: string]: any }>(`submissions/${id}/finalize/`, {
     method: "POST",
   });
 }

@@ -1,0 +1,61 @@
+[tool.importlinter]
+root_package = "app"
+
+[[tool.importlinter.contracts]]
+name = "Domain layer independence"
+type = "forbidden"
+source_modules = ["app.domain"]
+forbidden_modules = [
+    "django",
+    "rest_framework",
+    "app.infrastructure",
+    "app.interfaces", 
+    "app.application"
+]
+
+[[tool.importlinter.contracts]]
+name = "Application layer dependencies"
+type = "forbidden"
+source_modules = ["app.application"]
+forbidden_modules = [
+    "django.db",
+    "django.contrib",
+    "rest_framework",
+    "app.infrastructure",
+    "app.interfaces"
+]
+
+[[tool.importlinter.contracts]]
+name = "Infrastructure layer boundaries"
+type = "forbidden"
+source_modules = ["app.infrastructure"]
+forbidden_modules = [
+    "app.application",
+    "app.interfaces"
+]
+
+[[tool.importlinter.contracts]]
+name = "Interfaces layer boundaries"
+type = "forbidden"
+source_modules = ["app.interfaces"]
+forbidden_modules = [
+    "app.infrastructure.models",
+    "app.infrastructure.repositories"
+]
+
+[[tool.importlinter.contracts]]
+name = "Clean Architecture layers"
+type = "layers"
+layers = [
+    "app.interfaces",
+    "app.application", 
+    "app.domain"
+]
+
+[[tool.importlinter.contracts]]
+name = "Infrastructure to Domain only"
+type = "layers"
+layers = [
+    "app.infrastructure",
+    "app.domain"
+]

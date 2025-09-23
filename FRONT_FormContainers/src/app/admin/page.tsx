@@ -296,8 +296,9 @@ function ActoresPanel() {
     load();
   }
 
-  async function onEditSubmit(actor: AdminActor) {
-    await adminUpdateActor(actor.id, actor);
+  async function onEditSubmit(actor: AdminActor | Partial<AdminActor>) {
+    if (!actor.id) return;
+    await adminUpdateActor(actor.id, actor as AdminActor);
     setEditing(null);
     load();
   }
@@ -480,8 +481,9 @@ function UsuariosPanel() {
     load();
   }
 
-  async function onEditSubmit(user: AdminUser) {
-    await upsertAdminUser(user);
+  async function onEditSubmit(user: AdminUser | Partial<AdminUser>) {
+    if (!user.username) return;
+    await upsertAdminUser(user as AdminUser);
     setEditing(null);
     load();
   }
