@@ -41,6 +41,29 @@ class QuestionnaireService:
         self.choice_repo = choice_repo
         self.storage = storage
 
+    def get_first_question(self, questionnaire_id: UUID):
+        """
+        Devuelve la primera pregunta (por orden) del cuestionario indicado.
+        Retorna la ENTIDAD de dominio (no el modelo de Django).
+        """
+        if not questionnaire_id:
+            raise EntityNotFoundError(
+                message="Debes indicar un questionnaire_id",
+                entity_type="Questionnaire",
+                entity_id="(none)"
+            )
+
+        questions = self.question_repo.list_by_questionnaire(questionnaire_id)
+        if not questions:
+            raise EntityNotFoundError(
+                message="No hay preguntas para este cuestionario.",
+                entity_type="Question",
+                entity_id=str(questionnaire_id),
+            )
+
+        # list_by_questionnaire ya viene ordenado por "order", tomamos la primera
+        return questions[0]
+
     def save_and_advance(self, cmd: SaveAndAdvanceCommand) -> SaveAndAdvanceResult:
         # 1) Cargar aggregate raíz
         submission = self.submission_repo.get(cmd.submission_id)
@@ -61,7 +84,8 @@ class QuestionnaireService:
 
         qtype = (getattr(question, "type", "") or "").lower()
         fmode = (getattr(question, "file_mode", "") or "").lower()
-
+        tag   = (getattr(question, "semantic_tag", "") or "").lower()
+        
         # 2) Validaciones del payload
         has_text = bool((cmd.answer_text or "").strip())
         has_choice = cmd.answer_choice_id is not None
@@ -132,6 +156,16 @@ class QuestionnaireService:
             meta=None,
         )
         saved = self.answer_repo.save(entity)
+
+        if cmd.actor_id and tag in {"proveedor", "transportista", "receptor"}:
+            field_map = {
+                "proveedor": "proveedor_id",
+                "transportista": "transportista_id",
+                "receptor": "receptor_id",
+            }
+            update_field = field_map[tag]
+            # Usamos update parcial en el repo de submissions (desacoplado del ORM)
+            self.submission_repo.save_partial_updates(submission.id, **{update_field: cmd.actor_id})
 
         # 9) Resolver siguiente pregunta (con ramificación si hay choice.branch_to)
         next_qid: Optional[UUID] = None

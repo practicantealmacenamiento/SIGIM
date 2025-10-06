@@ -13,7 +13,7 @@ import { listActors } from "@/lib/api.admin";
 const CARD =
   "rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-slate-900 shadow-sm";
 const INPUT =
-  "rounded-xl border px-3 py-2 outline-none focus:ring-2 focus:ring-skyBlue/30 bg-white dark:bg-slate-900";
+  "rounded-xl border border-slate-300 dark:border-white/15 px-3 py-2 outline-none focus:ring-2 focus:ring-skyBlue/30 bg-white dark:bg-slate-900";
 const BTN =
   "min-h-[40px] px-4 py-2 rounded-xl border border-slate-300 dark:border-white/20 hover:bg-slate-50 dark:hover:bg-white/5 transition disabled:opacity-50 disabled:cursor-not-allowed";
 
@@ -29,16 +29,48 @@ const fmtShortDate = (iso?: string) => {
   return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
 };
 
+function statusVisual(state: "completo" | "pendiente") {
+  if (state === "completo") {
+    return {
+      icon: "✅",
+      label: "Completo",
+      bar: "bg-emerald-500",
+      badge: "bg-emerald-50 text-emerald-700 border-emerald-200/70 dark:bg-emerald-400/10 dark:text-emerald-300 dark:border-emerald-300/20",
+      dot: "bg-emerald-500",
+    };
+  }
+  return {
+    icon: "⏳",
+    label: "Pendiente",
+    bar: "bg-amber-400",
+    badge: "bg-amber-50 text-amber-800 border-amber-200/70 dark:bg-amber-400/10 dark:text-amber-300 dark:border-amber-300/20",
+    dot: "bg-amber-400",
+  };
+}
+
 /* ——— dedupe ——— */
+
+function mergeActors(primary: HistorialRow, secondary?: HistorialRow): HistorialRow {
+  if (!secondary) return primary;
+  return {
+    ...primary,
+    proveedor: primary.proveedor ?? secondary.proveedor ?? null,
+    transportista: primary.transportista ?? secondary.transportista ?? null,
+  };
+}
+
 function pickBetter(a: HistorialRow, b: HistorialRow) {
-  // Preferir el que tenga más fases cerradas; a igualdad, el más reciente
   const score = (x: HistorialRow) => (x.fase1_id ? 1 : 0) + (x.fase2_id ? 1 : 0);
   const ts = (x: HistorialRow) =>
     new Date(x.ultima_fecha_cierre || x.fecha_salida || x.fecha_entrada || 0).getTime();
-  if (score(a) !== score(b)) return score(a) > score(b) ? a : b;
-  return ts(a) >= ts(b) ? a : b;
-}
 
+  // Elige la “mejor” por puntaje y luego por fecha
+  const better = score(a) !== score(b) ? (score(a) > score(b) ? a : b) : (ts(a) >= ts(b) ? a : b);
+  const other = better === a ? b : a;
+
+  // Merge solo de actores para no perder proveedor/transportista
+  return mergeActors(better, other);
+}
 function normalizeRows(input: HistorialRow[]): HistorialRow[] {
   const map = new Map<string, HistorialRow>();
   for (const r of input) {
@@ -51,35 +83,8 @@ function normalizeRows(input: HistorialRow[]): HistorialRow[] {
 
 /* ——— key única para React ——— */
 function rowKey(r: HistorialRow, index?: number) {
-  // Usar un identificador único que incluya el índice para evitar duplicados
   const baseKey = `${r.regulador_id ?? "reg"}::${r.fase1_id ?? "_"}::${r.fase2_id ?? "_"}::${r.placa ?? "_"}`;
   return index !== undefined ? `${baseKey}::${index}` : baseKey;
-}
-
-function Badge({
-  children,
-  tone = "slate",
-  title,
-}: {
-  children: React.ReactNode;
-  tone?: "amber" | "emerald" | "indigo" | "slate";
-  title?: string;
-}) {
-  const tones: Record<string, string> = {
-    amber:
-      "text-slate-900 dark:text-white bg-amber-100 dark:bg-amber-400/15 border border-amber-300/70 dark:border-amber-300/30",
-    emerald:
-      "text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-400/10 border border-emerald-200/70 dark:border-emerald-300/20",
-    indigo:
-      "text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-400/10 border border-indigo-200/70 dark:border-indigo-300/20",
-    slate:
-      "text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-white/5 border border-slate-200/70 dark:border-white/10",
-  };
-  return (
-    <span title={title} className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-sm font-medium ${tones[tone]}`}>
-      {children}
-    </span>
-  );
 }
 
 /* ——— tipos ——— */
@@ -126,8 +131,9 @@ function HistorialContent() {
   });
   const [actorOpts, setActorOpts] = useState<ActorOption[]>([]);
   const [actorLoading, setActorLoading] = useState(false);
-  const [actorOpen, setActorOpen] = useState(false);
+  const [actorPopoverOpen, setActorPopoverOpen] = useState(false);
   const actorInputRef = useRef<HTMLInputElement>(null);
+  const actorRef = useRef<HTMLDivElement | null>(null);
 
   /* ——— Orden/paginación ——— */
   const [sort, setSort] = useState<SortKey>((urlParams.get("sort") as SortKey) || "reciente");
@@ -148,13 +154,11 @@ function HistorialContent() {
   const [countComp, setCountComp] = useState<number | null>(null);
   const [countPend, setCountPend] = useState<number | null>(null);
 
-  /* ——— Menú/Popovers ——— */
+  /* ——— Menú y fecha ——— */
   const [menuOpen, setMenuOpen] = useState(false);
   const [dateOpen, setDateOpen] = useState(false);
-  const [actorPopoverOpen, setActorPopoverOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const dateRef = useRef<HTMLDivElement | null>(null);
-  const actorRef = useRef<HTMLDivElement | null>(null);
 
   /* ——— Autorefresh ——— */
   const [autoRefresh, setAutoRefresh] = useState<boolean>(urlParams.get("auto") === "1");
@@ -200,13 +204,12 @@ function HistorialContent() {
         }
       );
 
-      if (mySeq !== loadSeq.current) return; // llegó tarde
+      if (mySeq !== loadSeq.current) return;
 
       const normalized = normalizeRows(results);
       setRows(normalized);
       setCount(count);
 
-      // contadores rápidos (usamos solo 'count' del backend)
       const [c1, c2] = await Promise.all([
         fetchHistorialEnriched(
           { fecha_desde: desde || undefined, fecha_hasta: hasta || undefined, solo_completados: true },
@@ -219,7 +222,6 @@ function HistorialContent() {
       ]);
 
       if (mySeq !== loadSeq.current) return;
-
       setCountComp(c1.count);
       setCountPend(c2.count);
     } catch (e: any) {
@@ -305,12 +307,11 @@ function HistorialContent() {
       actor_tipo_api: actorSel?.tipo || "", dir: dir || "", page: String(page), pageSize: String(pageSize), view, auto: autoRefresh ? "1" : "",
     };
     if (sort) params.sort = sort;
-    
     const qs = new URLSearchParams(params);
     navigator.clipboard.writeText(`${location.pathname}?${qs.toString()}`).then(() => alert("Enlace copiado"));
   }
 
-  /* ——— Tabla (vista alternativa) ——— */
+  /* ——— Tabla (vista alternativa, con iconos/colores) ——— */
   const Table = useMemo(() => {
     if (view !== "table") return null;
     return (
@@ -321,25 +322,26 @@ function HistorialContent() {
               <tr className="text-left">
                 <th className="px-4 py-3 w-36">
                   <button className="underline-offset-2 hover:underline" onClick={() => toggleSort("reciente")}>
-                    Reciente {sort === "reciente" ? (dir === "asc" ? "▲" : "▼") : ""}
+                    ⏱ Reciente {sort === "reciente" ? (dir === "asc" ? "▲" : "▼") : ""}
                   </button>
                 </th>
                 <th className="px-4 py-3 w-28">
                   <button className="underline-offset-2 hover:underline" onClick={() => toggleSort("placa")}>
-                    Placa {sort === "placa" ? (dir === "asc" ? "▲" : "▼") : ""}
+                    🚗 Placa {sort === "placa" ? (dir === "asc" ? "▲" : "▼") : ""}
                   </button>
                 </th>
-                <th className="px-4 py-3">Proveedor</th>
-                <th className="px-4 py-3">Transportista</th>
-                <th className="px-4 py-3">Fase 1</th>
-                <th className="px-4 py-3">Fase 2</th>
-                <th className="px-4 py-3 w-28">Estado</th>
+                <th className="px-4 py-3">🏭 Proveedor</th>
+                <th className="px-4 py-3">🚚 Transportista</th>
+                <th className="px-4 py-3">📥 Fase 1</th>
+                <th className="px-4 py-3">📤 Fase 2</th>
+                <th className="px-4 py-3 w-32">Estado</th>
                 <th className="px-4 py-3 w-40">Acciones</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r, idx) => {
                 const f1 = r.fase1_id, f2 = r.fase2_id;
+                const vis = statusVisual(r.estado === "completo" ? "completo" : "pendiente");
                 return (
                   <tr key={rowKey(r, idx)} className="border-t border-slate-200/70 dark:border-white/10">
                     <td className="px-4 py-3 whitespace-nowrap">{fmtDateTime(r.ultima_fecha_cierre)}</td>
@@ -349,16 +351,15 @@ function HistorialContent() {
                     <td className="px-4 py-3 truncate max-w-[240px]">{(r.cuestionario_fase1 || "—") + " · " + fmtDateTime(r.fecha_entrada)}</td>
                     <td className="px-4 py-3 truncate max-w-[240px]">{(r.cuestionario_fase2 || "—") + " · " + fmtDateTime(r.fecha_salida)}</td>
                     <td className="px-4 py-3">
-                      {r.estado === "completo" ? (
-                        <span className="inline-flex items-center rounded-lg px-2 py-1 text-xs font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-300">Completo</span>
-                      ) : (
-                        <span className="inline-flex items-center rounded-lg px-2 py-1 text-xs font-medium bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200">Pendiente</span>
-                      )}
+                      <span className={`inline-flex items-center gap-2 rounded-lg px-2 py-1 text-xs font-medium border ${vis.badge}`}>
+                        <span className={`h-2.5 w-2.5 rounded-full ${vis.dot}`} />
+                        {vis.icon} {vis.label}
+                      </span>
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <button className={BTN} disabled={!f1} onClick={() => f1 && router.push(`/historial/${f1}`)}>Fase 1</button>
-                        <button className={BTN} disabled={!f2} onClick={() => f2 && router.push(`/historial/${f2}`)}>Fase 2</button>
+                        <button className={BTN} disabled={!f1} onClick={() => f1 && router.push(`/historial/${f1}`)}>🔎 Fase 1</button>
+                        <button className={BTN} disabled={!f2} onClick={() => f2 && router.push(`/historial/${f2}`)}>🔎 Fase 2</button>
                       </div>
                     </td>
                   </tr>
@@ -377,76 +378,57 @@ function HistorialContent() {
   return (
     <main className="min-h-[calc(100vh-80px)] px-6 md:px-8 py-6 md:py-8">
       <div className="mx-auto max-w-[1150px]">
-        {/* Header compacto sticky */}
-        <div className="sticky top-16 z-30 mb-4">
-          <div className="rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white/80 dark:bg-slate-900/80 backdrop-blur px-4 py-3 md:px-5 md:py-4 shadow-sm">
-            {/* fila 1: título + métricas + vista/orden */}
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div className="flex items-center gap-3">
-                <h1 className="text-2xl md:text-3xl font-semibold">Historial</h1>
-                <div className="flex items-center gap-2 text-xs md:text-sm">
-                  <span className="inline-flex items-center gap-1 rounded-lg px-2 py-1 bg-emerald-50 dark:bg-emerald-400/10 text-emerald-700 dark:text-emerald-300 border border-emerald-200/70 dark:border-emerald-300/20">
-                    ✅ Completos:{countComp ?? "—"}
-                  </span>
-                  <span className="inline-flex items-center gap-1 rounded-lg px-2 py-1 bg-amber-50 dark:bg-amber-400/10 text-amber-700 dark:text-amber-300 border border-amber-200/70 dark:border-amber-300/20">
-                    ⏳ Pendientes:{countPend ?? "—"}
-                  </span>
-                  <span className="inline-flex items-center gap-1 rounded-lg px-2 py-1 bg-slate-50 dark:bg-white/10">
-                    Total listado:{count}
-                  </span>
+        {/* Header limpio */}
+        <div className="mb-4">
+          <div className="flex items-end justify-between gap-4 flex-wrap">
+            <div>
+              <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Historial</h1>
+              <p className="mt-1 text-sm text-slate-600 dark:text-white/70">
+                ✅ Completos: <span className="font-medium">{countComp ?? "—"}</span> ·
+                {" "}⏳ Pendientes: <span className="font-medium">{countPend ?? "—"}</span> ·
+                {" "}Mostrando: <span className="font-medium">{count}</span>
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <select value={view} onChange={(e) => setView(e.target.value as ViewMode)} className={INPUT} title="Vista">
+                <option value="cards">Tarjetas</option>
+                <option value="table">Tabla</option>
+              </select>
+              <select
+                value={`${sort}:${dir}`}
+                onChange={(e) => {
+                  const [s, d] = e.target.value.split(":") as [SortKey, SortDir];
+                  setSort(s); setDir(d); setPage(1);
+                }}
+                className={INPUT}
+                title="Orden"
+              >
+                <option value="reciente:desc">⏱ Reciente ↓</option>
+                <option value="reciente:asc">⏱ Reciente ↑</option>
+                <option value="placa:asc">🚗 Placa ↑</option>
+                <option value="placa:desc">🚗 Placa ↓</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Filtros */}
+          <div className={`${CARD} mt-3 p-3 md:p-4`}>
+            <div className="grid md:grid-cols-4 gap-3">
+              <div className="md:col-span-2">
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2">🔎</span>
+                  <input
+                    type="search"
+                    placeholder="Buscar por placa…"
+                    value={search}
+                    onChange={(e) => { setPage(1); setSearch(e.target.value); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); setPage(1); load(); } }}
+                    className="w-full rounded-xl border px-9 py-3 outline-none focus:ring-2 focus:ring-skyBlue/30 tracking-wide"
+                  />
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                <select value={view} onChange={(e) => setView(e.target.value as ViewMode)} className={INPUT} title="Vista">
-                  <option value="cards">Tarjetas</option>
-                  <option value="table">Tabla</option>
-                </select>
-                <select
-                  value={`${sort}:${dir}`}
-                  onChange={(e) => {
-                    const [s, d] = e.target.value.split(":") as [SortKey, SortDir];
-                    setSort(s); setDir(d); setPage(1);
-                  }}
-                  className={INPUT}
-                  title="Orden"
-                >
-                  <option value="reciente:desc">Reciente ↓</option>
-                  <option value="reciente:asc">Reciente ↑</option>
-                  <option value="placa:asc">Placa ↑</option>
-                  <option value="placa:desc">Placa ↓</option>
-                </select>
-              </div>
-            </div>
-
-            {/* fila 2: búsqueda */}
-            <div className="mt-3">
-              <input
-                type="search"
-                placeholder="Buscar por placa…"
-                value={search}
-                onChange={(e) => { setPage(1); setSearch(e.target.value); }}
-                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); setPage(1); load(); } }}
-                className="w-full rounded-xl border px-4 py-3 outline-none focus:ring-2 focus:ring-skyBlue/30 tracking-wide"
-              />
-            </div>
-
-            {/* fila 3: 3 pills + acciones */}
-            <div className="mt-3 flex items-center gap-2 flex-wrap">
-              {/* Estado (segmentado) */}
-              <div className="rounded-2xl border border-slate-200/70 dark:border-white/10 bg-slate-50/60 dark:bg-white/5 p-1">
-                {(["completo", "pendiente", "todos"] as Estado[]).map((e) => (
-                  <button
-                    key={e}
-                    className={`px-3 py-1.5 rounded-xl text-sm ${estado === e ? "bg-white dark:bg-slate-900 shadow" : ""}`}
-                    onClick={() => { setEstado(e); setPage(1); }}
-                  >
-                    {e === "completo" ? "Completos" : e === "pendiente" ? "Pendientes" : "Todos"}
-                  </button>
-                ))}
-              </div>
-
-              {/* Rango (popover) */}
+              {/* Rango de fechas */}
               <div className="relative" ref={dateRef}>
                 <button className={BTN} onClick={() => setDateOpen((v) => !v)} title="Rango de fechas">
                   🗓 Rango{desde || hasta ? `: ${fmtShortDate(desde)} – ${fmtShortDate(hasta)}` : ""}
@@ -467,79 +449,92 @@ function HistorialContent() {
                 )}
               </div>
 
-              {/* Actor (popover) */}
+              {/* Estado */}
+              <select
+                value={estado}
+                onChange={(e) => { setEstado(e.target.value as Estado); setPage(1); }}
+                className={INPUT}
+              >
+                <option value="completo">✅ Completos</option>
+                <option value="pendiente">⏳ Pendientes</option>
+                <option value="todos">📁 Todos</option>
+              </select>
+            </div>
+
+            {/* Filtro de Actor + Acciones */}
+            <div className="mt-3 flex items-center gap-2 flex-wrap">
               <div className="relative" ref={actorRef}>
-                <button className={BTN} onClick={() => setActorPopoverOpen((v) => !v)} title="Filtrar por actor">
-                  👤 Actor{actorSel ? `: ${actorSel.nombre || actorSel.documento || actorSel.id}` : actorTipo !== "todos" ? ` (${actorTipo})` : ""}
-                </button>
-                {actorPopoverOpen && (
-                  <div className={`${CARD} absolute z-20 mt-2 w-[340px] p-3`}>
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={actorTipo}
-                        onChange={(e) => { setActorTipo(e.target.value as ActorTipo); setActorSel(null); setActorInput(""); setActorOpts([]); }}
-                        className={INPUT}
-                      >
-                        <option value="todos">Actor (todos)</option>
-                        <option value="proveedor">Proveedor</option>
-                        <option value="transportista">Transportista</option>
-                      </select>
-                      <button className={BTN} onClick={clearActorSelection}>Limpiar</button>
-                    </div>
-                    <div className="mt-2">
-                      <input
-                        ref={actorInputRef}
-                        type="search"
-                        placeholder={actorTipo === "proveedor" ? "Buscar proveedor (nombre/doc)…" : actorTipo === "transportista" ? "Buscar transportista (nombre/doc)…" : "Selecciona tipo…"}
-                        value={actorSel ? (actorSel.nombre || actorSel.documento || actorSel.id) : actorInput}
-                        onChange={(e) => { setPage(1); setActorSel(null); setActorInput(e.target.value); }}
-                        disabled={actorTipo === "todos"}
-                        className={`w-full ${INPUT} ${actorTipo === "todos" ? "opacity-60 cursor-not-allowed" : ""}`}
-                      />
-                      {actorLoading && <div className="mt-1 text-xs text-slate-500">Buscando…</div>}
-                      {actorTipo !== "todos" && !actorSel && actorOpts.length > 0 && (
-                        <ul className="mt-2 max-h-56 overflow-auto rounded-xl border bg-white dark:bg-slate-900">
-                          {actorOpts.map((opt) => (
-                            <li
-                              key={opt.id}
-                              className="px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-white/5 cursor-pointer"
-                              onClick={() => { setActorSel(opt); setActorPopoverOpen(false); }}
-                            >
-                              <div className="font-medium">{opt.nombre || opt.documento || opt.id}</div>
-                              <div className="text-xs text-slate-500">{opt.tipo} {opt.documento ? `• ${opt.documento}` : ""}</div>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={actorTipo}
+                    onChange={(e) => { setActorTipo(e.target.value as ActorTipo); setActorSel(null); setActorInput(""); setActorOpts([]); }}
+                    className={INPUT}
+                  >
+                    <option value="todos">👥 Actor (todos)</option>
+                    <option value="proveedor">🏭 Proveedor</option>
+                    <option value="transportista">🚚 Transportista</option>
+                  </select>
+                  <input
+                    ref={actorInputRef}
+                    type="search"
+                    placeholder={actorTipo === "proveedor" ? "🏭 Proveedor (nombre/doc)…" : actorTipo === "transportista" ? "🚚 Transportista (nombre/doc)…" : "Selecciona tipo…"}
+                    value={actorSel ? (actorSel.nombre || actorSel.documento || actorSel.id) : actorInput}
+                    onChange={(e) => { setPage(1); setActorSel(null); setActorInput(e.target.value); }}
+                    disabled={actorTipo === "todos"}
+                    className={`w-[260px] ${INPUT} ${actorTipo === "todos" ? "opacity-60 cursor-not-allowed" : ""}`}
+                  />
+                  <button className={BTN} onClick={() => setActorPopoverOpen((v) => !v)}>🔎 Buscar</button>
+                  <button className={BTN} onClick={clearActorSelection}>🧹 Limpiar</button>
+                </div>
+
+                {actorPopoverOpen && actorTipo !== "todos" && !actorSel && (
+                  <div className={`${CARD} absolute z-20 mt-2 w-[360px] p-2`}>
+                    {actorLoading && <div className="px-3 py-2 text-sm text-slate-500">Buscando…</div>}
+                    {!actorLoading && actorOpts.length === 0 && actorInput.trim() && (
+                      <div className="px-3 py-2 text-sm text-slate-500">Sin resultados</div>
+                    )}
+                    {actorOpts.length > 0 && (
+                      <ul className="max-h-64 overflow-auto">
+                        {actorOpts.map((opt) => (
+                          <li
+                            key={opt.id}
+                            className="px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-white/5 cursor-pointer rounded-lg"
+                            onClick={() => { setActorSel(opt); setActorPopoverOpen(false); }}
+                          >
+                            <div className="font-medium">{opt.nombre || opt.documento || opt.id}</div>
+                            <div className="text-xs text-slate-500">{opt.tipo} {opt.documento ? `• ${opt.documento}` : ""}</div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 )}
               </div>
 
-              {/* Acciones principales */}
-              <button
-                className="min-h-[40px] px-4 py-2 rounded-xl bg-skyBlue text-white font-medium shadow hover:opacity-90 transition"
-                onClick={() => { setPage(1); load(); }}
-              >
-                Aplicar
-              </button>
-
-              {/* Menú ⋯ */}
-              <div className="relative" ref={menuRef}>
-                <button className={BTN} onClick={() => setMenuOpen((v) => !v)} aria-haspopup="menu" aria-expanded={menuOpen}>
-                  ⋯
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  className="min-h-[40px] px-4 py-2 rounded-xl bg-skyBlue text-white font-medium shadow hover:opacity-90 transition"
+                  onClick={() => { setPage(1); load(); }}
+                >
+                  Aplicar
                 </button>
-                {menuOpen && (
-                  <div className={`${CARD} absolute right-0 mt-2 w-56 p-2 z-20`}>
-                    <button className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5" onClick={exportCSVAll} disabled={count === 0 || loading}>⤓ Exportar CSV</button>
-                    <button className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5" onClick={copyLink}>🔗 Copiar enlace</button>
-                    <label className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5 cursor-pointer">
-                      <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
-                      Autorefresh cada 30s
-                    </label>
-                    <button className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5 text-red-600" onClick={clearFilters}>🧹 Limpiar filtros</button>
-                  </div>
-                )}
+
+                <div className="relative" ref={menuRef}>
+                  <button className={BTN} onClick={() => setMenuOpen((v) => !v)} aria-haspopup="menu" aria-expanded={menuOpen}>
+                    ⋯
+                  </button>
+                  {menuOpen && (
+                    <div className={`${CARD} absolute right-0 mt-2 w-56 p-2 z-20`}>
+                      <button className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5" onClick={exportCSVAll} disabled={count === 0 || loading}>⤓ Exportar CSV</button>
+                      <button className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5" onClick={copyLink}>🔗 Copiar enlace</button>
+                      <label className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5 cursor-pointer">
+                        <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
+                        🔄 Autorefresh 30s
+                      </label>
+                      <button className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5 text-red-600" onClick={clearFilters}>🧹 Limpiar filtros</button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -547,13 +542,15 @@ function HistorialContent() {
 
         {/* Lista / estados */}
         {loading ? (
-          <ul className="grid gap-4">{Array.from({ length: 6 }).map((_, i) => (
-            <li key={i} className={`${CARD} p-5 md:p-6 animate-pulse`}>
-              <div className="h-5 w-48 rounded bg-slate-200/70 dark:bg-white/10 mb-3" />
-              <div className="h-4 w-80 rounded bg-slate-200/70 dark:bg-white/10 mb-2" />
-              <div className="h-4 w-64 rounded bg-slate-200/70 dark:bg-white/10" />
-            </li>
-          ))}</ul>
+          <ul className="grid gap-4">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <li key={i} className={`${CARD} p-5 md:p-6 animate-pulse`}>
+                <div className="h-5 w-48 rounded bg-slate-200/70 dark:bg-white/10 mb-3" />
+                <div className="h-4 w-80 rounded bg-slate-200/70 dark:bg-white/10 mb-2" />
+                <div className="h-4 w-64 rounded bg-slate-200/70 dark:bg-white/10" />
+              </li>
+            ))}
+          </ul>
         ) : error ? (
           <div className={`${CARD} p-6 md:p-8 text-center`}>
             <p className="text-red-600 mb-3">{error}</p>
@@ -570,32 +567,68 @@ function HistorialContent() {
           <ul className="grid gap-4">
             {rows.map((r, idx) => {
               const f1 = r.fase1_id, f2 = r.fase2_id;
+              const state = r.estado === "completo" ? "completo" : "pendiente";
+              const vis = statusVisual(state);
               return (
-                <li key={rowKey(r, idx)} className={`${CARD} p-5 md:p-6 transition hover:shadow-md`}>
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 md:gap-3 flex-wrap">
-                        {r.estado === "completo" ? (
-                          <Badge tone="emerald" title="Fase 1 y Fase 2 cerradas">✅ Completado</Badge>
-                        ) : (
-                          <Badge tone="slate" title="Falta completar alguna fase">⏳ Pendiente</Badge>
-                        )}
-                        <Badge tone="amber" title="Placa del vehículo">🚗 <span className="font-semibold tracking-wider">{r.placa || "SIN PLACA"}</span></Badge>
-                        {r.tiempo_estadia_humano && <Badge tone="indigo" title="Tiempo de estadía">⏱️ {r.tiempo_estadia_humano}</Badge>}
+                <li key={rowKey(r, idx)} className={`${CARD} p-0 overflow-hidden transition hover:shadow-md`}>
+                  <div className="flex">
+                    {/* Barra de acento por estado */}
+                    <div className={`w-1.5 ${vis.bar}`} />
+                    {/* Contenido */}
+                    <div className="flex-1 p-5 md:p-6">
+                      <div className="flex items-start justify-between gap-4">
+                        {/* Columna izquierda */}
+                        <div className="min-w-0">
+                          {/* Línea principal: estado + última actualización */}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`inline-flex items-center gap-2 text-xs font-medium px-2 py-1 rounded-lg border ${vis.badge}`}>
+                              <span className={`h-2.5 w-2.5 rounded-full ${vis.dot}`} />
+                              {vis.icon} {vis.label}
+                            </span>
+                            <span className="text-xs text-slate-500 dark:text-white/60">⏱ {fmtDateTime(r.ultima_fecha_cierre)}</span>
+                          </div>
+
+                          {/* Placa */}
+                          <div className="mt-1.5 flex items-center gap-2">
+                            <span className="text-xl md:text-2xl">🚗</span>
+                            <div className="text-lg md:text-xl font-semibold tracking-wide">{r.placa || "SIN PLACA"}</div>
+                          </div>
+
+                          {/* Fases */}
+                          <div className="mt-3 grid gap-1.5 text-sm md:text-base">
+                            <div className="flex items-center gap-2 border-l-2 pl-3 border-sky-400">
+                              <span className="text-sky-700 dark:text-sky-300">📥 Fase 1</span>
+                              <span className="opacity-70">· {(r.cuestionario_fase1 || "—")} · {fmtDateTime(r.fecha_entrada)}</span>
+                            </div>
+                            <div className="flex items-center gap-2 border-l-2 pl-3 border-indigo-400">
+                              <span className="text-indigo-700 dark:text-indigo-300">📤 Fase 2</span>
+                              <span className="opacity-70">· {(r.cuestionario_fase2 || "—")} · {fmtDateTime(r.fecha_salida)}</span>
+                            </div>
+                          </div>
+
+                          {/* Actores */}
+                          <div className="mt-2 text-sm text-slate-600 dark:text-white/70 flex items-center gap-4 flex-wrap">
+                            {r.proveedor && (
+                              <span className="inline-flex items-center gap-1.5">
+                                <span className="text-sky-600 dark:text-sky-300">🏭</span>
+                                <span className="font-medium">{r.proveedor.nombre || r.proveedor.documento || r.proveedor.id}</span>
+                              </span>
+                            )}
+                            {r.transportista && (
+                              <span className="inline-flex items-center gap-1.5">
+                                <span className="text-indigo-600 dark:text-indigo-300">🚚</span>
+                                <span className="font-medium">{r.transportista.nombre || r.transportista.documento || r.transportista.id}</span>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Acciones */}
+                        <div className="flex flex-col items-end gap-2 shrink-0">
+                          <button className={BTN} disabled={!f1} onClick={() => f1 && router.push(`/historial/${f1}`)}>🔎 Ver Fase 1</button>
+                          <button className={BTN} disabled={!f2} onClick={() => f2 && router.push(`/historial/${f2}`)}>🔎 Ver Fase 2</button>
+                        </div>
                       </div>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {r.proveedor && <Badge title={`Proveedor: ${r.proveedor.nombre || ""}`}>🏭 {r.proveedor.nombre || r.proveedor.documento || r.proveedor.id}</Badge>}
-                        {r.transportista && <Badge title={`Transportista: ${r.transportista.nombre || ""}`}>🚚 {r.transportista.nombre || r.transportista.documento || r.transportista.id}</Badge>}
-                      </div>
-                      <div className="mt-2 grid gap-1 text-sm md:text-base text-slate-700 dark:text-white/70">
-                        <div><span className="font-medium">Última actualización: </span>{fmtDateTime(r.ultima_fecha_cierre)}</div>
-                        <div className="opacity-90 truncate"><span className="font-medium">Fase 1: </span>{r.cuestionario_fase1 || "—"} · cierre {fmtDateTime(r.fecha_entrada)}</div>
-                        <div className="opacity-90 truncate"><span className="font-medium">Fase 2: </span>{r.cuestionario_fase2 || "—"} · cierre {fmtDateTime(r.fecha_salida)}</div>
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-end gap-2 shrink-0">
-                      <button className={BTN} disabled={!f1} onClick={() => f1 && router.push(`/historial/${f1}`)}>Ver Fase 1</button>
-                      <button className={BTN} disabled={!f2} onClick={() => f2 && router.push(`/historial/${f2}`)}>Ver Fase 2</button>
                     </div>
                   </div>
                 </li>
@@ -608,9 +641,9 @@ function HistorialContent() {
         {count > 0 && (
           <div className="mt-5 flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-2">
-              <button onClick={() => { window.scrollTo({ top: 0, behavior: "smooth" }); setPage((p) => Math.max(1, p - 1)); }} className={BTN} disabled={page === 1}>Anterior</button>
+              <button onClick={() => { window.scrollTo({ top: 0, behavior: "smooth" }); setPage((p) => Math.max(1, p - 1)); }} className={BTN} disabled={page === 1}>← Anterior</button>
               <span className="text-sm text-slate-600 dark:text-white/70">Página {page} de {totalPages}</span>
-              <button onClick={() => { window.scrollTo({ top: 0, behavior: "smooth" }); setPage((p) => Math.min(totalPages, p + 1)); }} className={BTN} disabled={page >= totalPages}>Siguiente</button>
+              <button onClick={() => { window.scrollTo({ top: 0, behavior: "smooth" }); setPage((p) => Math.min(totalPages, p + 1)); }} className={BTN} disabled={page >= totalPages}>Siguiente →</button>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-sm">Tamaño:</span>
@@ -628,21 +661,23 @@ function HistorialContent() {
 
 export default function HistorialPage() {
   return (
-    <Suspense fallback={
-      <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
-        <main className="mx-auto max-w-7xl px-6 py-8">
-          <div className="animate-pulse">
-            <div className="h-8 bg-gray-200 rounded mb-6"></div>
-            <div className="h-32 bg-gray-200 rounded mb-6"></div>
-            <div className="space-y-4">
-              <div className="h-24 bg-gray-200 rounded"></div>
-              <div className="h-24 bg-gray-200 rounded"></div>
-              <div className="h-24 bg-gray-200 rounded"></div>
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
+          <main className="mx-auto max-w-7xl px-6 py-8">
+            <div className="animate-pulse">
+              <div className="h-8 bg-gray-200 rounded mb-6"></div>
+              <div className="h-32 bg-gray-200 rounded mb-6"></div>
+              <div className="space-y-4">
+                <div className="h-24 bg-gray-200 rounded"></div>
+                <div className="h-24 bg-gray-200 rounded"></div>
+                <div className="h-24 bg-gray-200 rounded"></div>
+              </div>
             </div>
-          </div>
-        </main>
-      </div>
-    }>
+          </main>
+        </div>
+      }
+    >
       <HistorialContent />
     </Suspense>
   );

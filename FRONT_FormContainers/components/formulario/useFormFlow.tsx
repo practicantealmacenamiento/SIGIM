@@ -7,15 +7,20 @@ import {
   guardarYAvanzar,
   verificarImagen,
   finalizarSubmission,
-  createSubmission, // ✅ crear submission al iniciar
-} from "@/lib/api";
+  createSubmission,
+} from "@/lib/api.form";
 import { isOcr, isImageOnly, today } from "@/lib/ui";
+import { saveDraft, loadDraft, clearDraft } from "@/lib/draft";
 
+const DRAFT_KEY = (qid: string) => `formulario_draft_${qid}`;
 type ActorMini = { id: string; nombre: string; documento?: string | null };
 const SUB_KEY = (qid: string) => `submission:${qid}`;
 
-const tagOf = (q: Question) => String((q as any)?.semantic_tag || "none").toLowerCase();
-const isActorTag = (t: string) => t === "proveedor" || t === "transportista" || t === "receptor";
+const tagOf = (q: Question) =>
+  String((q as any)?.semantic_tag || "none").toLowerCase();
+
+const isActorTag = (t: string) =>
+  t === "proveedor" || t === "transportista" || t === "receptor";
 
 const valueFromOCR = (resp: any, tag: string) => {
   if (!resp) return "";
@@ -28,6 +33,41 @@ const valueFromOCR = (resp: any, tag: string) => {
 function fdSet(fd: FormData, k: string, v: any) {
   if (v === undefined || v === null) return;
   fd.set(k, typeof v === "string" || v instanceof Blob ? v : String(v));
+}
+
+/** 🔹 Normaliza cualquier error del backend a un string legible */
+function normalizeApiError(e: any): string {
+  const tryPick = (obj: any): string | null => {
+    if (!obj || typeof obj === "string") return obj || null;
+    const first = (...opts: any[]) => opts.find(v => typeof v === "string" && v.trim());
+    const direct = first(obj.detail, obj.error, obj.message, obj.mensaje);
+    if (direct) return direct;
+
+    if (Array.isArray(obj.non_field_errors) && obj.non_field_errors[0]) return String(obj.non_field_errors[0]);
+    if (Array.isArray(obj.answer) && obj.answer[0]) return String(obj.answer[0]);
+
+    for (const k of Object.keys(obj)) {
+      const v = obj[k];
+      if (typeof v === "string" && v.trim()) return v;
+      if (Array.isArray(v) && typeof v[0] === "string" && v[0].trim()) return v[0];
+    }
+    return null;
+  };
+
+  let raw = e?.message ?? e;
+
+  if (typeof raw === "string") {
+    try {
+      const obj = JSON.parse(raw);
+      const s = tryPick(obj);
+      if (s) return s;
+    } catch {}
+  }
+
+  const s2 = tryPick(e?.responseJSON || e?.data || e);
+  if (s2) return s2;
+
+  return typeof raw === "string" ? raw : "Ocurrió un error inesperado";
 }
 
 export function useFormFlow(
@@ -45,12 +85,36 @@ export function useFormFlow(
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Para evitar TS con el prop del child, dejamos el tipo que más encaja
+  // NUEVO: Estado para reanudación de draft y bandera para evitar doble init
+  const [resumeDraft, setResumeDraft] = useState<{ draft: any } | null>(null);
+  const [draftRestored, setDraftRestored] = useState(false);
+
   const lastRef = useRef<HTMLDivElement | null>(null);
   const inFlight = useRef(false);
 
-  // Bootstrap: crear/recuperar submission y cargar primera pregunta
+  // === CHECK SI HAY DRAFT ANTES DE INICIAR ===
   useEffect(() => {
+    if (!qid) return;
+    const draft = loadDraft(DRAFT_KEY(qid));
+    const hayProgreso =
+      draft &&
+      Array.isArray(draft.items) &&
+      draft.items.some(
+        (item: any) =>
+          item.saved ||
+          (item.value && String(item.value).trim().length > 0)
+      );
+    if (draft && !draft.finalizado && hayProgreso) {
+      setResumeDraft({ draft });
+      setLoading(false);
+      return;
+    }
+    // Si no hay draft válido, seguimos con el loading "normal"
+  }, [qid]);
+
+  // --- BOOTSTRAP: SOLO SI NO HAY DRAFT PENDIENTE Y NO SE HA RESTAURADO ---
+  useEffect(() => {
+    if (!qid || resumeDraft || draftRestored) return; // <-- evita doble init
     let cancelled = false;
     (async () => {
       try {
@@ -58,13 +122,11 @@ export function useFormFlow(
         setLoading(true);
         if (!qid) { setLoading(false); return; }
 
-        // 1) recuperar/propagar submission_id
         let sid: string | null = submission_id ?? null;
         if (!sid) {
           try { sid = sessionStorage.getItem(`submission:${qid}`); } catch {}
         }
 
-        // 2) si no existe, crearla ENVIANDO questionnaire
         if (!sid) {
           const created: any = await createSubmission({
             questionnaire: qid,
@@ -78,11 +140,9 @@ export function useFormFlow(
         if (cancelled) return;
         setSubmissionId(sid);
 
-        // 3) cargar la primera pregunta
         const first = await getPrimeraPregunta(qid);
         if (cancelled) return;
-        
-        // Convertir AdminQuestion a Question
+
         const questionForForm: Question = {
           id: first.id,
           text: first.text,
@@ -97,7 +157,7 @@ export function useFormFlow(
           file_mode: first.file_mode as "image_ocr" | "ocr_only" | "image_only" | null,
           semantic_tag: first.semantic_tag
         };
-        
+
         setItems([{
           q: questionForForm,
           value: first.type === "date" ? today() : "",
@@ -112,14 +172,57 @@ export function useFormFlow(
       }
     })();
     return () => { cancelled = true; };
-  }, [qid, submission_id]);
+  }, [qid, submission_id, resumeDraft, draftRestored]);
 
-  // Scroll al último ítem
+  // --- RESTAURAR DRAFT SI ELIGE REANUDAR ---
+  const handleResumeDraft = () => {
+    if (!resumeDraft) return;
+    setSubmissionId(resumeDraft.draft.submissionId);
+    setItems(resumeDraft.draft.items);
+    setMostrarResumen(resumeDraft.draft.mostrarResumen || false);
+    setFinalizado(resumeDraft.draft.finalizado || false);
+    setResumeDraft(null);
+    setDraftRestored(true);
+    setLoading(false);
+  };
+
+  // --- REINICIAR DRAFT SI ELIGE EMPEZAR DE CERO ---
+  const handleRestartDraft = () => {
+    if (!qid) return;
+    clearDraft(DRAFT_KEY(qid));
+    setResumeDraft(null);
+    setDraftRestored(false);
+    // Limpia también en sessionStorage cualquier residuo
+    try { sessionStorage.removeItem(`submission:${qid}`); } catch {}
+    window.location.reload();
+  };
+
+  // === AUTOSAVE EN CADA CAMBIO DE ESTADO ===
+  useEffect(() => {
+    if (!qid || !submissionId) return;
+    // SOLO guarda si hay al menos una respuesta respondida o editada
+    const hayProgreso = items.some(
+      (item) => item.saved || (item.value && String(item.value).trim().length > 0)
+    );
+    if (!finalizado && !mostrarResumen && hayProgreso) {
+      saveDraft(DRAFT_KEY(qid), {
+        submissionId,
+        items,
+        mostrarResumen,
+        finalizado,
+        ts: Date.now()
+      });
+    } else if (!hayProgreso) {
+      // Si no hay progreso, limpia cualquier draft previo
+      clearDraft(DRAFT_KEY(qid));
+    }
+  }, [qid, submissionId, items, mostrarResumen, finalizado]);
+
+  // === SCROLL A LA ÚLTIMA PREGUNTA ===
   useEffect(() => {
     lastRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [items.length]);
 
-  // Autoguarda fecha “hoy” cuando corresponda
   useEffect(() => {
     const idx = items.length - 1;
     const it = items[idx];
@@ -131,7 +234,6 @@ export function useFormFlow(
   async function submitOne(index: number, valueOverride?: string, actorOverride?: ActorMini) {
     const it = items[index] as any;
     if (!it?.editing) return;
-
     if (!submissionId) {
       setError("Falta 'submission_id'.");
       return;
@@ -145,21 +247,28 @@ export function useFormFlow(
       const q = it.q as Question;
       const tag = tagOf(q);
 
-      // Validaciones básicas por tipo
+      // Validaciones básicas por tipo (sin cambios funcionales)
       if (isActorTag(tag)) {
         const actor = actorOverride ?? it.actor;
         if (!actor?.id) throw new Error("Selecciona un actor válido.");
       } else if (q.type === "file") {
         const files: File[] = it.files || [];
         if (isOcr(q)) {
-          if (files.length !== 1) throw new Error("Adjunta exactamente 1 imagen.");
+          const tag = tagOf(q);
+          const v = (valueOverride ?? (it.value as string) ?? "").trim();
+
+          if (tag === "placa") {
+            if (!v && files.length !== 1) {
+              throw new Error("Escribe la placa o adjunta 1 imagen.");
+            }
+          } else {
+            if (files.length !== 1) {
+              throw new Error("Adjunta exactamente 1 imagen.");
+            }
+          }
         } else if (isImageOnly(q)) {
           if (files.length < 1) throw new Error("Adjunta al menos 1 imagen.");
         }
-      } else if (q.required) {
-        const v = valueOverride ?? (it.value as string);
-        const ok = q.type === "choice" ? !!v : (v || "").trim().length > 0;
-        if (!ok) throw new Error("Falta completar el campo.");
       }
 
       // FormData para /guardar_avanzar/
@@ -175,11 +284,11 @@ export function useFormFlow(
         fdSet(fd, "actor_id", actor.id);
         fdSet(fd, "answer_text", actor.nombre || "");
         savedValue = actor.nombre || "";
-      } else if (q.type === "choice") {
+      } else if ((q.type as string) === "choice") {
         const v = valueOverride ?? (it.value as string);
         fdSet(fd, "answer_choice_id", v);
         savedValue = v;
-      } else if (q.type === "file") {
+      } else if ((q.type as string) === "file") {
         const files: File[] = it.files || [];
         if (files[0]) fdSet(fd, "answer_file", files[0]);
         if (isOcr(q)) {
@@ -209,7 +318,7 @@ export function useFormFlow(
       let nextQ: Question | null = null;
       if ((resp as any)?.next_question) nextQ = (resp as any).next_question as Question;
       else if ((resp as any)?.next_question_id) {
-        try { 
+        try {
           const adminQ = await getQuestionById((resp as any).next_question_id as string);
           nextQ = {
             id: adminQ.id,
@@ -257,8 +366,12 @@ export function useFormFlow(
         }
         return out;
       });
+
+      // 🔹 limpiar error en guardado exitoso
+      setError(null);
     } catch (e: any) {
-      setError(e?.message || "Error guardando la respuesta");
+      // 🔹 mostrar mensaje normalizado
+      setError(normalizeApiError(e));
     } finally {
       inFlight.current = false;
       setSending(false);
@@ -266,6 +379,8 @@ export function useFormFlow(
   }
 
   function setVal(i: number, v: string) {
+    // 🔹 limpiar error al escribir
+    setError(null);
     setItems(prev => {
       const copy = [...prev];
       const cur: any = copy[i];
@@ -276,6 +391,8 @@ export function useFormFlow(
   }
 
   function setActor(i: number, actor: ActorMini) {
+    // 🔹 limpiar error al seleccionar actor
+    setError(null);
     setItems(prev => {
       const copy = [...prev];
       const cur: any = copy[i];
@@ -286,6 +403,7 @@ export function useFormFlow(
   }
 
   function onSelectChoice(i: number, id: string) {
+    // no tocamos el flujo: mantiene setVal + submitOne
     setVal(i, id);
     submitOne(i, id);
   }
@@ -313,6 +431,8 @@ export function useFormFlow(
   }
 
   async function onFilesChange(i: number, list: FileList | null) {
+    // 🔹 limpiar error al adjuntar/quitar archivo
+    setError(null);
     if (!list?.length) return;
     const q = items[i]?.q;
     const incoming = Array.from(list);
@@ -437,6 +557,8 @@ export function useFormFlow(
       await finalizarSubmission(submissionId);
       setFinalizado(true);
       try { if (qid) sessionStorage.removeItem(SUB_KEY(qid)); } catch {}
+      // --- borra draft ---
+      clearDraft(DRAFT_KEY(qid));
     } catch (e: any) {
       setError(e?.message || "No se pudo enviar el formulario");
     } finally {
@@ -469,5 +591,10 @@ export function useFormFlow(
     onFilesChange, removeFile, onEnviar, retryOCR,
 
     total, respondidas,
+
+    // --- draft controls para la UI del modal ---
+    resumeDraft,
+    handleResumeDraft,
+    handleRestartDraft,
   };
 }

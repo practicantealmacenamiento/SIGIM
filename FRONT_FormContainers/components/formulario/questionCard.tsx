@@ -34,7 +34,6 @@ type Props = {
 
 const tagOf = (q: any) => String(q?.semantic_tag || "none").toLowerCase();
 const isActorTag = (t: string) => t === "proveedor" || t === "transportista" || t === "receptor";
-const isStrictOcrTag = (t: string) => t === "placa" || t === "contenedor" || t === "precinto";
 
 const TIPO_BY_SLUG: Record<string, "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR"> = {
   proveedor: "PROVEEDOR",
@@ -71,26 +70,31 @@ export default function QuestionCard({
 }: Props) {
   const uid = useId();
   const q = it.q;
-  
-  // Variables básicas
+
+  // Básicos
   const active = it.editing;
   const disabled = !active || sending;
   const busy = sending && active;
-  
-  // Todos los hooks deben ir antes del early return
-  const slug = useMemo(() => q ? tagOf(q) : "none", [q]);
+
+  const slug = useMemo(() => (q ? tagOf(q) : "none"), [q]);
   const isCatalog = useMemo(() => isActorTag(slug), [slug]);
 
   const sectionClass = useMemo(
     () =>
-      `${CARD} p-7 md:p-9 mb-5 md:mb-6 transition-shadow duration-200 ${active ? "ring-2 ring-skyBlue/60 shadow-xl" : "shadow"}`,
+      `${CARD} relative p-7 md:p-9 mb-5 md:mb-6 transition-shadow duration-200 ${
+        active ? "ring-2 ring-skyBlue/60 shadow-xl" : "shadow"
+      }`,
     [active]
   );
 
   const [fileError, setFileError] = useState<string | null>(null);
-  const errorId = `file-error-${uid}`;
+  const fileErrorId = `file-error-${uid}`;
 
-  // NUEVO: estado local para “omitir” SOLO en la primera pregunta
+  // Error del padre con dismiss local (no afecta al estado global)
+  const [showParentError, setShowParentError] = useState<boolean>(Boolean(errorMsg));
+  useEffect(() => setShowParentError(Boolean(errorMsg)), [errorMsg]);
+
+  // Omitir primera
   const [skipFirst, setSkipFirst] = useState(false);
 
   const onFilesChangeValidated = useCallback(
@@ -121,11 +125,13 @@ export default function QuestionCard({
     });
   }, [idx, setItems]);
 
-  // Activar edición al primer click/focus en controles
+  // Activa edición al interactuar + oculta el error del padre
   const activateOnInteract = useCallback(() => {
     if (!active && !sending) openEditing();
-  }, [active, sending, openEditing]);
+    if (showParentError) setShowParentError(false);
+  }, [active, sending, openEditing, showParentError]);
 
+  // Catálogo → persistir y enviar
   const handleActorSelect = useCallback(
     (actor: ActorLite) => {
       setActor?.(idx, actor);
@@ -139,29 +145,39 @@ export default function QuestionCard({
     [idx, setItems, submitOne, setActor]
   );
 
-  // Auto-avance OCR (se mantiene tu lógica)
+  // Auto-avance OCR sólo si hubo archivo y el texto vino del OCR
   const autoSubmitGuard = useRef(false);
   useEffect(() => {
     if (!active || sending || !isOcr(q)) return;
-    if ((it as any).saved === true) { autoSubmitGuard.current = false; return; }
 
-    const ocr: any = (it as any).ocr;
-    const strict = isStrictOcrTag(slug);
-    const autoFromOCR: boolean = !!(it as any).autoFromOCR;
-    const valueFromOCR: string | undefined = (it as any).valueFromOCR;
-    const sameAsOCR = typeof it.value === "string" && valueFromOCR && it.value === valueFromOCR;
-    const valido = ocr?.valido === true;
+    const hasFile = !!((it as any)?.files?.length);
+    const autoFromOCR = !!(it as any)?.autoFromOCR;
+    const valueFromOCR: string | undefined = (it as any)?.valueFromOCR;
+    const sameAsOCR =
+      typeof it.value === "string" && valueFromOCR && it.value === valueFromOCR;
+    const valido = Boolean((it as any)?.ocr?.valido);
 
-    const ready = strict ? (autoFromOCR && sameAsOCR && valido) : (valido || sameAsOCR);
+    const shouldAuto = hasFile && autoFromOCR && (valido || sameAsOCR);
 
-    if (ready && !autoSubmitGuard.current) {
+    if (shouldAuto && !autoSubmitGuard.current) {
       autoSubmitGuard.current = true;
       submitOne(idx);
     }
-    if (!ready) autoSubmitGuard.current = false;
-  }, [active, sending, idx, (it as any).ocr, it.value, (it as any).autoFromOCR, (it as any).valueFromOCR, q, slug, submitOne]);
+    if (!shouldAuto) autoSubmitGuard.current = false;
+  }, [
+    active,
+    sending,
+    idx,
+    (it as any)?.ocr,
+    (it as any)?.files,
+    (it as any)?.autoFromOCR,
+    (it as any)?.valueFromOCR,
+    it.value,
+    q,
+    submitOne,
+  ]);
 
-  // Estado OCR general (sin cambios)
+  // Estado OCR (visual)
   const ocrStatusDisplay = useMemo(() => {
     const raw: any = (it as any)?.ocr;
     if (!raw) return undefined;
@@ -179,6 +195,7 @@ export default function QuestionCard({
     }
   }, [it]);
 
+  // Badge ISO 6346 (solo para contenedor)
   const isoBadge = useMemo(() => {
     if (slug !== "contenedor") return null;
 
@@ -209,9 +226,20 @@ export default function QuestionCard({
       ref={isLast ? lastRef : null}
       aria-labelledby={`q-${q.id}-label`}
       aria-busy={busy}
-      className={`group rounded-2xl border bg-white dark:bg-slate-800 transition-all duration-200 shadow-sm hover:shadow-md focus-within:shadow-md px-6 md:px-8 py-7 md:py-8 mb-6 ring-1 ring-slate-200 dark:ring-white/10 ${active ? "ring-2 ring-skyBlue/60 shadow-xl" : ""}`}
+      className={`group rounded-2xl border bg-white dark:bg-slate-800 transition-all duration-200 shadow-sm hover:shadow-md focus-within:shadow-md px-6 md:px-8 py-7 md:py-8 mb-6 ring-1 ring-slate-200 dark:ring-white/10 ${active ? "ring-2 ring-skyBlue/60 shadow-xl" : ""} relative`}
       data-qid={q.id}
     >
+      {/* Overlay de carga no intrusivo */}
+      {busy && (
+        <div
+          className="absolute inset-0 grid place-items-center bg-white/40 dark:bg-slate-900/30 backdrop-blur-[1px] rounded-2xl z-10"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="animate-spin h-6 w-6 rounded-full border-2 border-slate-400 border-t-transparent" />
+        </div>
+      )}
+
       <div className="flex items-start gap-5 md:gap-6">
         <div
           className={`h-11 w-11 md:h-12 md:w-12 shrink-0 rounded-full grid place-items-center text-white font-semibold shadow-md transition-colors duration-200 ${active ? "bg-skyBlue" : "bg-slate-400"}`}
@@ -226,10 +254,34 @@ export default function QuestionCard({
             className="text-xl md:text-2xl font-semibold leading-snug text-slate-900 dark:text-white mb-3 md:mb-4"
           >
             {q.text}
-            {q.required ? <span className="text-red-500">*</span> : ""}
+            {q.required ? (
+              <span className="ml-2 inline-flex items-center gap-1 text-red-500 text-sm align-middle" title="Respuesta obligatoria" aria-label="Respuesta obligatoria">
+                *
+              </span>
+            ) : null}
           </h3>
 
-          {/* Catálogo */}
+          {/* Alerta de error del padre (con dismiss local) */}
+          {errorMsg && showParentError && active && (
+            <div
+              className="mb-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2"
+              role="alert"
+              aria-live="assertive"
+            >
+              <span className="mt-0.5">⚠️</span>
+              <div className="flex-1">{errorMsg}</div>
+              <button
+                type="button"
+                onClick={() => setShowParentError(false)}
+                className="ml-2 px-2 py-1 rounded hover:bg-amber-100 text-amber-900"
+                aria-label="Ocultar mensaje de error"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {/* Catálogo (actor) */}
           {isCatalog && (
             <div onClickCapture={activateOnInteract} onFocusCapture={activateOnInteract}>
               <ActorInput
@@ -258,7 +310,7 @@ export default function QuestionCard({
             <TextInput
               value={it.value}
               disabled={disabled}
-              onChange={(v) => setVal(idx, v)}
+              onChange={(v) => { if (showParentError) setShowParentError(false); setVal(idx, v); }}
               onBlur={() => submitOne(idx)}
               onEnter={(e) => onEnter(e, idx)}
             />
@@ -268,7 +320,7 @@ export default function QuestionCard({
             <NumberInput
               value={it.value}
               disabled={disabled}
-              onChange={(v) => setVal(idx, v)}
+              onChange={(v) => { if (showParentError) setShowParentError(false); setVal(idx, v); }}
               onBlur={() => submitOne(idx)}
               onEnter={(e) => onEnter(e, idx)}
             />
@@ -278,7 +330,7 @@ export default function QuestionCard({
             <DateInput
               value={it.value || today()}
               disabled={disabled}
-              onChange={(v) => setVal(idx, v)}
+              onChange={(v) => { if (showParentError) setShowParentError(false); setVal(idx, v); }}
               onCommit={() => submitOne(idx, it.value || today())}
             />
           )}
@@ -292,18 +344,30 @@ export default function QuestionCard({
                 ocrStatus={ocrStatusDisplay}
                 sending={sending}
                 onFilesChange={onFilesChangeValidated}
-                onChangeText={(v) => setVal(idx, v)}
+                onChangeText={(v) => { if (showParentError) setShowParentError(false); setVal(idx, v); }}
                 onSubmit={() => submitOne(idx)}
                 onRetryOCR={() => retryOCR(idx)}
-                aria-describedby={fileError ? errorId : undefined}
+                aria-describedby={fileError ? fileErrorId : undefined}
               />
 
               {isoBadge}
 
-              {fileError && (
-                <p id={errorId} className="mt-2 text-sm text-red-600 dark:text-red-400" role="alert">
-                  {fileError}
-                </p>
+              {slug === "placa" && (
+                <>
+                  <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                    Puedes <strong>escribir la placa manualmente</strong> o subir una imagen para OCR. La imagen no es obligatoria.
+                  </p>
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      onClick={() => submitOne(idx)}
+                      disabled={sending || !String(it.value || "").trim()}
+                      className="px-3 py-2 rounded-lg bg-skyBlue text-white disabled:opacity-60"
+                    >
+                      Continuar con texto
+                    </button>
+                  </div>
+                </>
               )}
             </>
           )}
@@ -317,17 +381,17 @@ export default function QuestionCard({
                 onFilesChange={onFilesChangeValidated}
                 onRemove={(k) => removeFile(idx, k)}
                 onSubmit={() => submitOne(idx)}
-                aria-describedby={fileError ? errorId : undefined}
+                aria-describedby={fileError ? fileErrorId : undefined}
               />
               {fileError && (
-                <p id={errorId} className="mt-2 text-sm text-red-600 dark:text-red-400" role="alert">
+                <p id={fileErrorId} className="mt-2 text-sm text-red-600 dark:text-red-400" role="alert" aria-live="assertive">
                   {fileError}
                 </p>
               )}
             </>
           )}
 
-          {/* ——— Omitir solo en la PRIMERA pregunta: envía "0" ——— */}
+          {/* Omitir solo la PRIMERA pregunta */}
           {idx === 0 && (
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <label className="inline-flex items-center gap-2 text-sm">
@@ -338,10 +402,7 @@ export default function QuestionCard({
                   onChange={(e) => {
                     const on = e.target.checked;
                     setSkipFirst(on);
-                    if (on) {
-                      // establece 0 localmente
-                      setVal(idx, "0");
-                    }
+                    if (on) setVal(idx, "0");
                   }}
                 />
                 <span>Omitir esta pregunta (registrar 0)</span>
@@ -349,10 +410,7 @@ export default function QuestionCard({
 
               <button
                 type="button"
-                onClick={() => {
-                  setVal(idx, "0");     // valor "0" en el estado local
-                  submitOne(idx, "0");  // y lo enviamos como override
-                }}
+                onClick={() => { setVal(idx, "0"); submitOne(idx, "0"); }}
                 className="px-3 py-2 rounded-lg border border-slate-200 dark:border-white/15 hover:bg-slate-50 dark:hover:bg-white/5 text-sm"
               >
                 Omitir y continuar
@@ -364,7 +422,7 @@ export default function QuestionCard({
           <div className="mt-5 flex flex-wrap items-center gap-3 md:gap-4">
             {it.saved && !it.editing && (
               <>
-                <span className="text-sm text-emerald-600 dark:text-emerald-400" aria-live="polite">
+                <span className="text-sm text-emerald-600 dark:text-emerald-400" role="status" aria-live="polite">
                   ✓ Respuesta guardada
                 </span>
                 <button
@@ -404,7 +462,7 @@ export default function QuestionCard({
         </div>
       </div>
 
-      {/* OVERRIDES de contraste para dark-mode en listbox/opciones */}
+      {/* Overrides de contraste para dark-mode en listbox/opciones */}
       <style jsx global>{`
         .dark [role="listbox"] {
           background-color: rgb(15 23 42) !important;

@@ -1,7 +1,6 @@
 from __future__ import annotations
-
 from dataclasses import dataclass, field
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Dict
 from uuid import UUID
 
 # Sentinel para diferenciar "no enviado" de "None"
@@ -53,7 +52,8 @@ class SaveAndAdvanceCommand:
 
     answer_text: Optional[str] = None
     answer_choice_id: Optional[UUID] = None
-    uploads: List[Any] = field(default_factory=list)  # UploadedFile-like
+    uploads: List[Any] = field(default_factory=list)
+    actor_id: Optional[UUID] = None
 
     # Bandera para truncar futuras respuestas (default True, como en tus views)
     force_truncate_future: bool = True
@@ -69,3 +69,36 @@ class SaveAndAdvanceResult:
     is_finished: bool
     derived_updates: dict
     warnings: List[str] = field(default_factory=list)
+
+@dataclass(frozen=True)
+class TableCellInput:
+    """Una celda de la fila: apunta a una pregunta y trae su dato."""
+    question_id: UUID
+    answer_text: Optional[str] = None
+    answer_choice_id: Optional[UUID] = None
+    actor_id: Optional[UUID] = None
+    upload: Optional[Any] = None  # UploadedFile para columnas tipo file
+
+@dataclass(frozen=True)
+class AddTableRowCommand:
+    submission_id: UUID
+    row_index: Optional[int]  # si viene None, el servicio calcula el siguiente
+    cells: List[TableCellInput] = field(default_factory=list)
+
+@dataclass(frozen=True)
+class UpdateTableRowCommand:
+    submission_id: UUID
+    row_index: int
+    cells: List[TableCellInput] = field(default_factory=list)
+
+@dataclass(frozen=True)
+class DeleteTableRowCommand:
+    submission_id: UUID
+    row_index: int
+
+@dataclass(frozen=True)
+class TableRowResult:
+    submission_id: UUID
+    row_index: int
+    # cada key es question_id (str) -> representación normalizada
+    values: Dict[str, Dict[str, Any]] = field(default_factory=dict)

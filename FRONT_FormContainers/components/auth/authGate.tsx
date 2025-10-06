@@ -1,66 +1,72 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { ReactNode, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { isAuthenticated } from "@/lib/api.admin";
 
-/* --- helpers cookies muy simples --- */
-function getCookie(name: string): string | null {
-  if (typeof document === "undefined") return null;
-  const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
-  return m ? decodeURIComponent(m[1]) : null;
-}
-function hasAuthHints() {
-  // Verificar múltiples señales de autenticación
-  const sessionId = getCookie("sessionid");
-  const authToken = getCookie("auth_token");
-  const isStaff = getCookie("is_staff");
-  const authUsername = getCookie("auth_username");
-  
-  // También verificar localStorage como fallback
-  let localToken = null;
-  try {
-    localToken = typeof localStorage !== "undefined" ? localStorage.getItem("admin_token") : null;
-  } catch {}
-  
-  return !!(sessionId || authToken || isStaff || authUsername || localToken);
-}
+/**
+ * Gate minimalista: solo confía en el token del login unificado (localStorage).
+ * - Redirige a /login?next=… cuando no hay token en rutas protegidas.
+ * - Reacciona a cambios de pestaña/foco y al evento 'storage'.
+ */
 
-/* Rutas públicas => NO redirigir nunca. */
-const PUBLIC_PREFIXES = [
-  "/login",
-  "/public",
-  "/_next",          // assets
-  "/favicon.ico",    // iconos
-];
+const PUBLIC_ROUTES = new Set<string>([
+  "/", "/login", "/registro", "/recuperar", "/verificacion", "/faq", "/contacto",
+]);
 
-function isPublic(pathname: string) {
-  return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"));
-}
+// Si quieres que /formulario sea público, quítalo de aquí.
+// Por tu comentario, lo BLOQUEAMOS tras logout:
+const ALWAYS_PROTECTED_PREFIXES = ["/admin", "/panel", "/historial", "/formulario", "/seleccion-formulario"];
 
-export default function AuthGate({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname() || "/";
+export default function AuthGate({ children }: { children: ReactNode }) {
   const router = useRouter();
-  const redirected = useRef(false);
+  const pathname = usePathname();
+  const search = useSearchParams();
+  const [authed, setAuthed] = useState<boolean | null>(null);
 
+  const pathProtected = useMemo(() => {
+    if (!pathname) return false;
+    if (PUBLIC_ROUTES.has(pathname)) return false;
+    return ALWAYS_PROTECTED_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"));
+  }, [pathname]);
+
+  // eval inicial + listeners
   useEffect(() => {
-    // Nada de redirecciones en rutas públicas
-    if (isPublic(pathname)) {
-      console.log("[AuthGate] Public route, skipping auth check:", pathname);
-      return;
-    }
+    const recompute = () => setAuthed(isAuthenticated());
+    recompute();
 
-    const authHints = hasAuthHints();
-    console.log("[AuthGate] Checking auth for:", pathname, "hasAuthHints:", authHints);
+    const onStorage = (e: StorageEvent) => {
+      if (!e.key) return recompute();
+      const key = process.env.NEXT_PUBLIC_AUTH_TOKEN_KEY || "auth:access_token";
+      if (e.key === key) recompute();
+    };
+    const onFocus = () => recompute();
+    const onVis = () => document.visibilityState === "visible" && recompute();
 
-    // Si no hay señales de auth, llevar a la ruta de login unificada (/login)
-    if (!authHints && !redirected.current) {
-      console.log("[AuthGate] No auth hints, redirecting to login");
-      redirected.current = true; // evita múltiples replace en renders sucesivos
-      router.replace(`/login?next=${encodeURIComponent(pathname)}`);
-    } else {
-      redirected.current = false;
-    }
-  }, [pathname, router]);
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
 
+  // redirección si corresponde
+  useEffect(() => {
+    if (authed === null) return; // aún evaluando
+    if (!pathProtected) return;  // ruta pública
+    if (authed) return;          // ok
+
+    const current = pathname + (search?.toString() ? `?${search.toString()}` : "");
+    const next = encodeURIComponent(current);
+    router.replace(`/login?next=${next}`);
+  }, [authed, pathProtected, pathname, router, search]);
+
+  // Evita “parpadeo” mostrando children antes de decidir
+  if (authed === null && pathProtected) {
+    return <div className="min-h-[30vh]" />; // skeleton mínimo
+  }
   return <>{children}</>;
 }

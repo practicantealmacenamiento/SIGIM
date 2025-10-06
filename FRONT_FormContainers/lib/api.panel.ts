@@ -103,9 +103,11 @@ export async function listarFase1Finalizados(params: {
   if (search.trim()) url.searchParams.set("placa_vehiculo", search.trim());
 
   const res = await fetch(url.toString(), { credentials: "include", headers: authHeaders("GET") });
-  const list = await parseOrThrow<any[]>(res, "No se pudo cargar el listado");
+  const data = await parseOrThrow<any>(res, "No se pudo cargar el listado");
+  const list = Array.isArray(data) ? data : data.results ?? [];
+  const count = typeof data.count === "number" ? data.count : list.length;
 
-  // Mapeo mínimo + paginación en cliente
+  // Mapeo mínimo + paginación en cliente (si no hay paginación backend)
   const mapped: SubmissionRow[] = list.map((s: any) => ({
     id: s.id,
     placa_vehiculo: s.placa_vehiculo ?? null,
@@ -117,7 +119,7 @@ export async function listarFase1Finalizados(params: {
   const start = (page - 1) * pageSize;
   const end = start + pageSize;
 
-  return { results: mapped.slice(start, end), count: mapped.length };
+  return { results: mapped.slice(start, end), count };
 }
 
 // ==== Buscar Fase 2 por placa (borrador/no finalizada)====
@@ -128,7 +130,11 @@ export async function buscarFase2PorPlaca(placa: string): Promise<SubmissionRow 
   url.searchParams.set("placa_vehiculo", placa);
 
   const res = await fetch(url.toString(), { credentials: "include", headers: authHeaders("GET") });
-  const list = await parseOrThrow<any[]>(res, "No se pudo buscar Fase 2");
+  const data = await parseOrThrow<any>(res, "No se pudo buscar Fase 2");
+
+  // Soporta ambos: array plano o paginado (results)
+  const list = Array.isArray(data) ? data : data.results ?? [];
+
   // Quédate con la más reciente NO finalizada
   const draft = list.find((s: any) => s.finalizado === false) || null;
 

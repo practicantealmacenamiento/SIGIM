@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import uuid
+from typing import Optional, Union
 from datetime import datetime, timezone
 from pathlib import Path
-import posixpath  # usar rutas POSIX en nombres de archivo (S3/local)
+import posixpath  
 import os
+import json
+from uuid import UUID
 
 from django.core.files.storage import default_storage
 from django.core.files.storage import Storage
+from django.core.files.base import ContentFile
 from django.core.exceptions import SuspiciousOperation
+from django.core.files.storage import default_storage
+from django.urls import reverse
 
 from app.domain.ports import FileStorage
 from app.domain.exceptions import FileStorageError, InvalidFileError
@@ -249,3 +255,54 @@ class DjangoDefaultStorageAdapter(FileStorage):
 
         return cleaned_path
 
+def get_secure_media_url(file_path: str) -> str:
+    """
+    URL relativa hacia el endpoint protegido de media para el file_path dado.
+    """
+    if not file_path:
+        return ""
+    safe = str(file_path).lstrip("/").replace("\\", "/")
+    try:
+        # 'secure-media' está definido como: path(f'{API_PREFIX}secure-media/<path:file_path>/', ...)
+        return reverse("secure-media", kwargs={"file_path": safe})
+    except Exception:
+        # Fallback defensivo si reverse falla por alguna razón
+        return f"/api/v1/secure-media/{safe}"
+
+def _as_str_uuid(v: Union[str, UUID]) -> str:
+    try:
+        return str(v)
+    except Exception:
+        return f"{v}"
+
+def get_layout_storage_path(questionnaire_id: Union[str, UUID]) -> str:
+    """
+    Ruta (en el default_storage) donde se guarda el layout JSON del cuestionario.
+    """
+    return f"questionnaire_layouts/{_as_str_uuid(questionnaire_id)}.json"
+
+def load_questionnaire_layout(questionnaire_id: Union[str, UUID]) -> Optional[dict]:
+    """
+    Lee el JSON de layout (anchos/headers/columnas) desde el storage.
+    Retorna dict o None si no existe.
+    """
+    path = get_layout_storage_path(questionnaire_id)
+    try:
+        if not default_storage.exists(path):
+            return None
+        with default_storage.open(path, "rb") as f:
+            return json.loads(f.read().decode("utf-8"))
+    except Exception:
+        # No propagamos errores de IO a la vista; la vista devolverá 404 si no hay layout
+        return None
+
+def save_questionnaire_layout(questionnaire_id: Union[str, UUID], layout: dict) -> str:
+    """
+    Guarda el layout JSON en el storage y devuelve la ruta escrita.
+    """
+    path = get_layout_storage_path(questionnaire_id)
+    data = json.dumps(layout, ensure_ascii=False, indent=2).encode("utf-8")
+    if default_storage.exists(path):
+        default_storage.delete(path)
+    default_storage.save(path, ContentFile(data))
+    return path

@@ -17,6 +17,7 @@ from typing import Optional
 # Import application services lazily to avoid circular dependencies
 
 from app.domain.ports import TextExtractorPort, FileStorage, NotificationServicePort
+from app.domain.repositories import ActorRepository
 
 from app.infrastructure.repositories import (
     DjangoAnswerRepository,
@@ -24,6 +25,7 @@ from app.infrastructure.repositories import (
     DjangoQuestionRepository,
     DjangoChoiceRepository,
     DjangoQuestionnaireRepository,
+    DjangoActorRepository,
 )
 from app.infrastructure.storage import DjangoDefaultStorageAdapter
 
@@ -53,8 +55,25 @@ class ServiceFactory:
         self._file_storage = None
         self._text_extractor = None
         self._notification_service = None
+        self._actor_repo: Optional[ActorRepository] = None
 
     # Repository factories (lazy initialization)
+    def _get_actor_repository(self) -> ActorRepository:
+        if self._actor_repo is None:
+            self._actor_repo = DjangoActorRepository()
+        return self._actor_repo
+    
+    def create_tabular_form_service(self):
+        from app.application.tabular import TabularFormService
+        return TabularFormService(
+            answer_repo=self._get_answer_repository(),
+            submission_repo=self._get_submission_repository(),
+            question_repo=self._get_question_repository(),
+            choice_repo=self._get_choice_repository(),
+            actor_repo=self._get_actor_repository(),
+            storage=self._get_file_storage(),
+        )
+
     def _get_answer_repository(self):
         """Get or create Answer repository instance."""
         if self._answer_repo is None:

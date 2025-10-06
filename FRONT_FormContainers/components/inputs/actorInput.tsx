@@ -1,192 +1,156 @@
-"use client";
-import React from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { searchCatalogActors } from "../../lib/api.form";
 
-type Actor = { id: string; nombre: string; documento?: string | null };
+type ActorTipo = "TRANSPORTISTA" | "PROVEEDOR" | "RECEPTOR";
+
+export type ActorItem = {
+  id: string;
+  nombre: string;
+  nit?: string | null;
+};
 
 type Props = {
-  tipo: "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR";
+  tipo: ActorTipo;
   defaultValue?: string;
   disabled?: boolean;
-  onSelect: (actor: Actor) => void;
-  /** Base de la API; si no se pasa, usa NEXT_PUBLIC_API_BASE o relativo */
-  apiBase?: string;
-  /** Si usas JWT, pásalo aquí; si usas sesión/cookies, no es necesario */
-  authToken?: string;
-  /** Milisegundos de debounce */
-  delay?: number;
+  onSelect: (actor: ActorItem) => void;
+  placeholder?: string;
+  className?: string;
 };
+
+function useDebounced<T>(value: T, delay = 300) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
+}
 
 export default function ActorInput({
   tipo,
   defaultValue = "",
   disabled,
   onSelect,
-  apiBase,
-  authToken,
-  delay = 280,
+  placeholder = "Escribe al menos 2 letras…",
+  className = "",
 }: Props) {
-  const [q, setQ] = React.useState(defaultValue);
-  const [open, setOpen] = React.useState(false);
-  const [items, setItems] = React.useState<Actor[]>([]);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const abortRef = React.useRef<AbortController | null>(null);
-  const timer = React.useRef<number | null>(null);
+  const [query, setQuery] = useState(defaultValue);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [items, setItems] = useState<ActorItem[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // Construye URL (intenta /api/... y si 404 prueba /app/api/...)
-  const base =
-    apiBase ??
-    (typeof process !== "undefined" ? process.env.NEXT_PUBLIC_API_BASE : "") ??
-    "";
+  const debounced = useDebounced(query, 300);
+  const canSearch = useMemo(() => debounced.trim().length >= 2, [debounced]);
 
-  async function fetchActors(url: string, ac: AbortController) {
-    const headers: Record<string, string> = { Accept: "application/json" };
-    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  useEffect(() => {
+    setQuery(defaultValue || "");
+  }, [defaultValue]);
 
-    return fetch(url, {
-      method: "GET",
-      signal: ac.signal,
-      headers,
-      credentials: authToken ? "omit" : "include",
+  useEffect(() => {
+    if (!open) return;
+    if (!canSearch) {
+      setItems([]);
+      setError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const params = new URLSearchParams({
+      tipo,                  // ← el back espera 'tipo' exactamente así
+      search: debounced,     // ← y el filtro es 'search', NO 'q' ni 'term'
+      limit: "15",
     });
-  }
 
-  function buildUrl(prefix: string, value: string) {
-    const u = new URL(
-      `${prefix.replace(/\/$/, "")}/catalogos/actores/`,
-      typeof window !== "undefined" ? window.location.origin : "http://localhost",
-    );
-    u.searchParams.set("tipo", tipo);
-    u.searchParams.set("search", value);
-    const final =
-      base && /^https?:\/\//.test(base)
-        ? new URL(u.pathname + u.search, base).toString()
-        : u.pathname + u.search;
-    return final;
-  }
-
-  async function search(v: string) {
-    if (abortRef.current) abortRef.current.abort();
-    const ac = new AbortController();
-    abortRef.current = ac;
     setLoading(true);
     setError(null);
 
-    try {
-      // 1) /api/...
-      let url = buildUrl("/api", v);
-      let res = await fetchActors(url, ac);
-
-      // 2) fallback /app/api/...
-      if (res.status === 404) {
-        url = buildUrl("/app/api", v);
-        res = await fetchActors(url, ac);
-      }
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status} ${text || ""}`.trim());
-      }
-
-      const data = (await res.json()) as Actor[];
-      setItems(data.slice(0, 12));
-      setOpen(data.length > 0);
-    } catch (e: any) {
-      if (e?.name === "AbortError") return;
-      setItems([]);
-      setOpen(false);
-      setError(e?.message || "Error al cargar actores");
-      if (process.env.NODE_ENV !== "production") console.warn("[ActorInput]", e);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function onChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const v = e.target.value;
-    setQ(v);
+    setLoading(true);
     setError(null);
-    if (timer.current) window.clearTimeout(timer.current);
-    if (!v || v.trim().length < 2) {
-      setItems([]);
-      setOpen(false);
-      return;
-    }
-    timer.current = window.setTimeout(() => search(v.trim()), delay) as unknown as number;
-  }
 
-  function onFocus() {
-    if (items.length > 0) setOpen(true);
-    else if (q.trim().length >= 2) search(q.trim());
-  }
+    searchCatalogActors({
+      tipo,                   // "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR"
+      search: debounced,      // texto que teclea el usuario (debounced)
+      limit: 15,
+      signal: controller.signal,
+    })
+      .then((data) => setItems(Array.isArray(data) ? data : []))
+      .catch((e: any) => {
+        if (e?.name !== "AbortError") setError("No se pudo buscar actores.");
+      })
+      .finally(() => setLoading(false));
 
-  function pick(a: Actor) {
-    setQ(a.nombre);
+    return () => controller.abort();
+  }, [open, canSearch, debounced, tipo]);
+
+  const handlePick = (actor: ActorItem) => {
     setOpen(false);
-    onSelect(a);
-  }
+    setQuery(actor.nombre);
+    onSelect(actor);
+  };
 
   return (
-    <div className="relative">
+    <div className={`relative ${className}`}>
       <input
-        className={[
-          "w-full rounded-lg border px-3 py-2 outline-none",
-          "bg-white text-slate-900 placeholder-slate-400",
-          "dark:bg-slate-900 dark:text-slate-100 dark:placeholder-slate-500",
-          "border-slate-300 focus:ring-2 focus:ring-sky-400/30 focus:border-sky-400/40",
-          "dark:border-white/10 dark:focus:ring-sky-400/30 dark:focus:border-sky-400/40",
-          disabled ? "opacity-60 cursor-not-allowed" : "",
-        ].join(" ")}
-        value={q}
-        onChange={onChange}
-        onFocus={onFocus}
-        onBlur={() => setTimeout(() => setOpen(false), 120)}
-        placeholder={`Buscar ${tipo.toLowerCase()}…`}
+        ref={inputRef}
+        type="text"
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => {
+          // retrasa el blur para permitir el click en la lista
+          setTimeout(() => setOpen(false), 150);
+        }}
         disabled={disabled}
+        placeholder={placeholder}
+        className="w-full rounded-md border px-3 py-2 outline-none focus:ring"
         autoComplete="off"
-        aria-autocomplete="list"
-        aria-expanded={open}
-        aria-haspopup="listbox"
       />
-      {loading && (
-        <div className="absolute right-2 top-2 text-xs select-none dark:text-slate-300">…</div>
-      )}
 
-      {!loading && error && (
-        <div className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</div>
-      )}
-
-      {open && !disabled && (
-        <ul
-          role="listbox"
-          className={[
-            "absolute z-50 w-full mt-1 max-h-64 overflow-auto rounded-xl border shadow-lg",
-            "bg-white text-slate-900 border-slate-200",
-            "dark:bg-slate-900 dark:text-slate-100 dark:border-white/10",
-          ].join(" ")}
-        >
-          {items.length === 0 && (
-            <li className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400 select-none">
-              Sin resultados
-            </li>
+      {open && (
+        <div className="absolute z-50 mt-1 w-full rounded-md border bg-white shadow-lg">
+          {loading && (
+            <div className="px-3 py-2 text-sm text-gray-500">Buscando…</div>
           )}
-          {items.map((it) => (
-            <li
-              key={it.id}
-              role="option"
-              className={[
-                "px-3 py-2 cursor-pointer text-sm",
-                "text-slate-800 hover:bg-slate-100",
-                "dark:text-slate-100 dark:hover:bg-slate-700/60",
-              ].join(" ")}
-              onMouseDown={() => pick(it)}
-              title={it.documento || ""}
-            >
-              {it.nombre}
-              {it.documento ? ` — ${it.documento}` : ""}
-            </li>
-          ))}
-        </ul>
+
+          {!loading && !canSearch && (
+            <div className="px-3 py-2 text-sm text-gray-500">
+              Escribe al menos 2 letras para buscar.
+            </div>
+          )}
+
+          {!loading && canSearch && error && (
+            <div className="px-3 py-2 text-sm text-red-600">{error}</div>
+          )}
+
+          {!loading && canSearch && !error && items.length === 0 && (
+            <div className="px-3 py-2 text-sm text-gray-500">Sin resultados.</div>
+          )}
+
+          {!loading && !error && items.length > 0 && (
+            <ul className="max-h-64 overflow-auto">
+              {items.map((it) => (
+                <li
+                  key={it.id}
+                  className="cursor-pointer px-3 py-2 hover:bg-gray-100"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => handlePick(it)}
+                  title={it.nit ? `${it.nombre} — ${it.nit}` : it.nombre}
+                >
+                  <div className="text-sm font-medium">{it.nombre}</div>
+                  {it.nit && (
+                    <div className="text-xs text-gray-500">NIT: {it.nit}</div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   );

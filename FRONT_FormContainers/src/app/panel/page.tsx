@@ -44,7 +44,10 @@ export default function PanelPage() {
   const [rows, setRows] = useState<SubmissionRow[]>([]);
   const [page, setPage] = useState(1);
   const [count, setCount] = useState(0);
+  const [loadingFase2, setLoadingFase2] = useState<string | null>(null); // id para loading individual
+  const [modal, setModal] = useState<{ row: SubmissionRow; fase2Id?: string } | null>(null);
 
+  // Carga submissions Fase 1 finalizados
   const load = async () => {
     try {
       setError(null);
@@ -64,24 +67,35 @@ export default function PanelPage() {
     load();
   }, [search, page]);
 
+  // Iniciar Fase 2 (o ir a la existente)
   const handleFase2 = async (row: SubmissionRow) => {
     const placa = (row.placa_vehiculo || "").trim().toUpperCase();
     if (!placa) return alert("Submission sin placa");
-
+    setLoadingFase2(row.id);
     try {
       const existente = await buscarFase2PorPlaca(placa);
-      const sub = existente?.id
-        ? existente
-        : await crearSubmissionFase2({
-            questionnaire_id_fase2: Q_FASE2,
-            placa_vehiculo: placa,
-            regulador_id: row.regulador_id ?? row.id,
-          });
-      router.push(`formulario?questionnaire_id=${Q_FASE2}&submission_id=${sub.id}`);
+      if (existente?.id) {
+        // Si ya existe Fase 2, muestra modal para ir o solo redirecciona
+        setModal({ row, fase2Id: existente.id });
+        // Si prefieres, redirecciona sin preguntar:
+        // router.push(`formulario?questionnaire_id=${Q_FASE2}&submission_id=${existente.id}`);
+      } else {
+        const sub = await crearSubmissionFase2({
+          questionnaire_id_fase2: Q_FASE2,
+          placa_vehiculo: placa,
+          regulador_id: row.regulador_id ?? row.id,
+        });
+        router.push(`formulario?questionnaire_id=${Q_FASE2}&submission_id=${sub.id}`);
+      }
     } catch (e: any) {
       alert(e.message || "Error al crear Fase 2");
+    } finally {
+      setLoadingFase2(null);
     }
   };
+
+  // UI paginación simple
+  const totalPages = Math.ceil(count / 20);
 
   return (
     <main className="min-h-screen px-6 md:px-8 py-8">
@@ -129,8 +143,15 @@ export default function PanelPage() {
                   <div>
                     <button
                       onClick={() => handleFase2(row)}
-                      className="px-4 py-2 rounded-lg bg-skyBlue text-white hover:bg-skyBlue/90 transition"
+                      className="px-4 py-2 rounded-lg bg-skyBlue text-white hover:bg-skyBlue/90 transition flex items-center gap-2"
+                      disabled={!!loadingFase2}
                     >
+                      {loadingFase2 === row.id && (
+                        <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                        </svg>
+                      )}
                       Iniciar Fase 2
                     </button>
                   </div>
@@ -138,6 +159,55 @@ export default function PanelPage() {
               </li>
             ))}
           </ul>
+        )}
+
+        {/* Paginación simple */}
+        {totalPages > 1 && (
+          <div className="flex justify-center gap-2 mt-8">
+            <button
+              disabled={page === 1}
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              className="px-3 py-2 rounded-lg border bg-white dark:bg-slate-900"
+            >
+              ◀ Anterior
+            </button>
+            <span className="px-4 py-2 text-slate-700 dark:text-white">{page} / {totalPages}</span>
+            <button
+              disabled={page === totalPages}
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              className="px-3 py-2 rounded-lg border bg-white dark:bg-slate-900"
+            >
+              Siguiente ▶
+            </button>
+          </div>
+        )}
+
+        {/* Modal si ya existe Fase 2 */}
+        {modal && (
+          <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center">
+            <div className="bg-white dark:bg-slate-900 p-8 rounded-2xl shadow-xl max-w-md w-full">
+              <h2 className="text-2xl font-bold mb-2">Ya existe Fase 2 para esta placa</h2>
+              <p className="mb-5 text-slate-600 dark:text-slate-200">
+                ¿Quieres continuar con la Fase 2 ya creada?
+              </p>
+              <div className="flex gap-4 justify-center">
+                <button
+                  className="px-4 py-2 rounded-lg bg-skyBlue text-white font-medium"
+                  onClick={() => {
+                    router.push(`formulario?questionnaire_id=${Q_FASE2}&submission_id=${modal.fase2Id}`);
+                  }}
+                >
+                  Ir a Fase 2
+                </button>
+                <button
+                  className="px-4 py-2 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-white"
+                  onClick={() => setModal(null)}
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </main>

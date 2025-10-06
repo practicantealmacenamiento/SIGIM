@@ -1,80 +1,79 @@
 from django.urls import path, include, re_path
 from rest_framework.routers import DefaultRouter
-from rest_framework.authtoken.views import obtain_auth_token
-from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
+# Vistas públicas/autenticadas (negocio + auth unificada)
 from app.interfaces.views import (
+    # Auth unificada
+    UnifiedLoginAPIView,
+    WhoAmIAPIView,
+    UnifiedLogoutAPIView,
+    QuestionnaireGridDefinitionAPIView,
+
+    # OCR / Cuestionario / Submissions / Catálogos / Media / Historial
     VerificacionUniversalAPIView,
     PrimeraPreguntaAPIView,
     GuardarYAvanzarAPIView,
     SubmissionViewSet,
+    ActorViewSet,
     MediaProtectedAPIView,
     QuestionnaireListAPIView,
     HistorialReguladoresAPIView,
-    ActorViewSet,
-    AdminActorViewSet,
     QuestionDetailAPIView,
 )
 
-# Admin imports (agregamos login + whoami)
+# Vistas de administración (CRUDs internos)
 from app.interfaces.admin_views import (
     AdminQuestionnaireViewSet,
     AdminUserViewSet,
-    AdminLoginAPIView,
-    AdminWhoAmI,
-    AdminLogoutAPIView
+    AdminActorViewSet,
 )
 
-router = DefaultRouter()
-# Router con barra opcional para evitar 301 redirects
-router.trailing_slash = r'/?'
+API_PREFIX = "api/v1/"
 
-# ===== RUTAS UNIFICADAS =====
-# Management/Admin - usando una sola ruta consistente
+router = DefaultRouter()
+router.trailing_slash = r'/?'  # evita 301/308 por barra final
+
+# ======== RUTAS ADMIN (solo staff, permisos en los viewsets) ========
 router.register(r'management/questionnaires', AdminQuestionnaireViewSet, basename='questionnaires')
 router.register(r'management/users', AdminUserViewSet, basename='users')
 router.register(r'management/actors', AdminActorViewSet, basename='admin-actors')
 
-# Public routes
+# ======== RUTAS PÚBLICAS AUTENTICADAS ========
 router.register(r'catalogos/actores', ActorViewSet, basename='actors')
 router.register(r'submissions', SubmissionViewSet, basename='submissions')
 
 urlpatterns = [
-    path('api/', include(router.urls)),
+    # Router bajo prefijo versionado
+    path(API_PREFIX, include(router.urls)),
 
-    # OpenAPI & Docs (GET solamente; pueden quedar con barra fija sin problema)
-    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
-    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+    # ======== AUTH UNIFICADA ========
+    re_path(rf'^{API_PREFIX}login/?$', UnifiedLoginAPIView.as_view(), name='login'),
+    re_path(rf'^{API_PREFIX}whoami/?$', WhoAmIAPIView.as_view(), name='whoami'),
+    re_path(rf'^{API_PREFIX}logout/?$', UnifiedLogoutAPIView.as_view(), name='logout'),
 
-    # ===== RUTAS MANUALES con barra opcional (evita 500 en POST sin "/") =====
+    # ======== VERIFICACIÓN (OCR) ========
+    re_path(rf'^{API_PREFIX}verificar/?$', VerificacionUniversalAPIView.as_view(), name='verificacion-universal'),
 
-    # Verificación (OCR) — POST
-    re_path(r'^api/verificar/?$', VerificacionUniversalAPIView.as_view(), name='verificacion-universal'),
+    # ======== CUESTIONARIO ========
+    path(f'{API_PREFIX}cuestionario/primera/', PrimeraPreguntaAPIView.as_view(), name='primera-pregunta'),
+    re_path(rf'^{API_PREFIX}cuestionario/guardar_avanzar/?$', GuardarYAvanzarAPIView.as_view(), name='guardar-y-avanzar'),
+    path(f'{API_PREFIX}cuestionarios/<uuid:qid>/grid/', QuestionnaireGridDefinitionAPIView.as_view(), name='questionnaire-grid'),
 
-    # Cuestionario
-    path('api/cuestionario/primera/', PrimeraPreguntaAPIView.as_view(), name='primera-pregunta'),  # GET
-    re_path(r'^api/cuestionario/guardar_avanzar/?$', GuardarYAvanzarAPIView.as_view(), name='guardar-y-avanzar'),  # POST
+    # Acciones custom de Submission (fuera del router por claridad)
+    path(f'{API_PREFIX}submissions/<uuid:pk>/finalize/', SubmissionViewSet.as_view({'post': 'finalize'}), name='submission-finalize'),
+    path(f'{API_PREFIX}submissions/<uuid:pk>/enriched/', SubmissionViewSet.as_view({'get': 'enriched_detail'}), name='submission-enriched'),
 
-    # Custom submission actions (handled by ViewSet)
-    path('api/submissions/<uuid:pk>/finalize/', SubmissionViewSet.as_view({'post': 'finalize'}), name='submission-finalize'),
-    path('api/submissions/<uuid:pk>/enriched/', SubmissionViewSet.as_view({'get': 'enriched_detail'}), name='submission-enriched'),
 
-    # Media protegido (GET; se puede dejar con barra fija)
-    path('api/secure-media/<path:file_path>/', MediaProtectedAPIView.as_view(), name='secure-media'),
+    # ======== MEDIA PROTEGIDO ========
+    path(f'{API_PREFIX}secure-media/<path:file_path>/', MediaProtectedAPIView.as_view(), name='secure-media'),
 
-    # Historial reguladores (GET) - con barra opcional
-    re_path(r'^api/historial/reguladores/?$', HistorialReguladoresAPIView.as_view(), name='historial-reguladores'),
+    # ======== HISTORIAL ========
+    re_path(rf'^{API_PREFIX}historial/reguladores/?$', HistorialReguladoresAPIView.as_view(), name='historial-reguladores'),
 
-    # Auth token DRF (por si lo usas desde scripts; hace POST a veces)
-    re_path(r'^api/api-token-auth/?$', obtain_auth_token, name='api_token_auth'),
+    # ======== CUESTIONARIOS (lista) ========
+    re_path(rf'^{API_PREFIX}cuestionarios/?$', QuestionnaireListAPIView.as_view(), name='cuestionarios-list'),
 
-    # ===== AUTENTICACIÓN UNIFICADA =====
-    # Una sola ruta de login/logout/whoami
-    re_path(r'^api/login/?$', AdminLoginAPIView.as_view(), name='login'),
-    re_path(r'^api/whoami/?$', AdminWhoAmI.as_view(), name='whoami'),
-    re_path(r'^api/logout/?$', AdminLogoutAPIView.as_view(), name='logout'),
-
-    # Selector de cuestionarios y detalle de pregunta (GET) - con barra opcional
-    re_path(r'^api/cuestionarios/?$', QuestionnaireListAPIView.as_view(), name='cuestionarios-list'),
-    re_path(r'^api/questions/(?P<id>[0-9a-f-]+)/?$', QuestionDetailAPIView.as_view(), name='question-detail'),
+    # ======== PREGUNTA DETALLE ========
+    re_path(rf'^{API_PREFIX}questions/(?P<id>[0-9a-f-]+)/?$', QuestionDetailAPIView.as_view(), name='question-detail'),
 ]
+

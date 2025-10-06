@@ -2,8 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import {
+  installGlobalAuthFetch,
+  isAuthenticated,
+  fetchWhoAmI,
+  listQuestionnaires,
+} from "@/lib/api.admin";
 
-/* ===== Tipos mínimos ===== */
+/* ========= Tipos ========= */
 type QuestionnaireItem = { id: string; title: string; version: string };
 type HistItem = {
   regulador_id: string;
@@ -12,57 +18,51 @@ type HistItem = {
   ultima_fecha_cierre?: string | null;
 };
 
-type WhoAmI = {
-  authenticated?: boolean;
-  is_authenticated?: boolean;
-  username?: string;
-  is_staff?: boolean;
-};
+/* ========= Config mínima (igual que el cliente API) ========= */
+const DEFAULT_API_PORT = 8000;
+const API_BASE =
+  (typeof window !== "undefined" &&
+    (process.env.NEXT_PUBLIC_API_URL || "")
+      .toString()
+      .replace(/\/$/, "")) ||
+  (typeof window !== "undefined"
+    ? `${window.location.protocol}//${window.location.hostname}:${DEFAULT_API_PORT}`
+    : `http://127.0.0.1:${DEFAULT_API_PORT}`);
+const API_V1 = (process.env.NEXT_PUBLIC_AUTH_PREFIX || "/api/v1").replace(/\/$/, "");
 
-/* ===== Helpers ===== */
+/* ========= Helpers ========= */
 async function fetchJSON<T = any>(url: string): Promise<T> {
-  // Asegurar que las URLs tengan barra final para evitar 301
-  const normalizedUrl = url.includes('?') 
-    ? url.replace(/([^?])(\?)/, '$1/$2')  // Agregar barra antes del query string
-    : url.endsWith('/') ? url : url + '/';  // Agregar barra final si no la tiene
-    
-  const res = await fetch(normalizedUrl, {
-    credentials: "include",
-    cache: "no-store",
-  });
+  const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) {
-    // En home no rompemos: entregamos vacío si es 401/403
-    if (res.status === 401 || res.status === 403) return [] as unknown as T;
-    const text = await res.text().catch(() => `${res.status}`);
-    throw new Error(text || `HTTP ${res.status}`);
-  }
-  return res.json() as Promise<T>;
-}
-
-async function fetchWhoAmI(): Promise<{ ok: boolean; username: string; isStaff: boolean }> {
-  // Probamos con slash y sin slash (según tu server logs ambos existen)
-  const tryOne = async (u: string) => {
-    try {
-      const data = (await fetchJSON<WhoAmI>(u)) || {};
-      const authed = Boolean(data.is_authenticated ?? data.authenticated ?? false);
-      return {
-        ok: authed,
-        username: data.username || "",
-        isStaff: Boolean(data.is_staff),
-      };
-    } catch {
-      return { ok: false, username: "", isStaff: false };
+    if (res.status === 401 || res.status === 403) {
+      // en home no rompemos si no hay sesión
+      return [] as unknown as T;
     }
-  };
-  const a = await tryOne("/api/whoami/");
-  if (a.ok) return a;
-  const b = await tryOne("/api/whoami/");
-  return b.ok ? b : { ok: false, username: "", isStaff: false };
+    const msg = await res.text().catch(() => `${res.status}`);
+    throw new Error(msg || `HTTP ${res.status}`);
+  }
+  return (await res.json()) as T;
 }
 
-/* ====== UI ====== */
+async function fetchRecent(): Promise<HistItem[]> {
+  // Usamos el mismo esquema que la app: base del backend + /api/v1/…
+  const url = `${API_BASE}${API_V1}/historial/reguladores/?solo_completados=1`;
+  try {
+    const data = await fetchJSON<HistItem[]>(url);
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+/* ========= UI ========= */
+const CARD =
+  "rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-slate-800 shadow-sm";
+const BTN =
+  "inline-flex items-center justify-center rounded-xl px-4 py-2.5 text-sm font-medium";
+
 export default function Home() {
-  const [authed, setAuthed] = useState<null | boolean>(null);
+  const [authed, setAuthed] = useState<boolean | null>(null);
   const [username, setUsername] = useState("");
   const [isStaff, setIsStaff] = useState(false);
 
@@ -71,23 +71,32 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // 1) Confirmar sesión primero
+  // 1) Bootstrap auth de cliente y whoami
   useEffect(() => {
-    let mounted = true;
+    installGlobalAuthFetch(); // añade Authorization: Bearer <token> globalmente
     (async () => {
-      const who = await fetchWhoAmI();
-      if (!mounted) return;
-      setAuthed(who.ok);
-      setUsername(who.username || "");
-      setIsStaff(who.isStaff || false);
+      if (!isAuthenticated()) {
+        setAuthed(false);
+        setUsername("");
+        setIsStaff(false);
+        return;
+      }
+      try {
+        const me = await fetchWhoAmI();
+        setAuthed(true);
+        setUsername(me.username || "");
+        setIsStaff(!!me.is_staff);
+      } catch {
+        setAuthed(false);
+        setUsername("");
+        setIsStaff(false);
+      }
     })();
-    return () => { mounted = false; };
   }, []);
 
-  // 2) Cargar datos solo si está autenticado
+  // 2) Cargar info solo si hay sesión
   useEffect(() => {
     if (authed !== true) {
-      // si aún no sabemos, dejamos el loader; si no authed, no pedimos nada
       if (authed === false) {
         setLoading(false);
         setQus([]);
@@ -95,35 +104,53 @@ export default function Home() {
       }
       return;
     }
+
     let mounted = true;
     (async () => {
+      setLoading(true);
       try {
-        setLoading(true);
-        const [qData, hData] = await Promise.all([
-          fetchJSON<QuestionnaireItem[]>("/api/cuestionarios/"),
-          fetchJSON<HistItem[]>("/api/historial/reguladores/?solo_completados=1"),
+        // listQuestionnaires ya soporta /management y cae a /cuestionarios
+        const [qs, last] = await Promise.all([
+          listQuestionnaires(),
+          fetchRecent(),
         ]);
         if (!mounted) return;
-        setQus(qData ?? []);
-        setHist((hData ?? []).slice(0, 5));
+        // Para el home solo necesitamos id/title/version
+        setQus(
+          (qs || []).map((q) => ({
+            id: q.id,
+            title: q.title,
+            version: q.version,
+          }))
+        );
+        setHist((last || []).slice(0, 5));
         setErr(null);
       } catch (e: any) {
         if (!mounted) return;
-        setErr(typeof e?.message === "string" ? e.message : "Error cargando datos");
+        setErr(typeof e?.message === "string" ? e.message : "No se pudo cargar la información");
       } finally {
         if (mounted) setLoading(false);
       }
     })();
-    return () => { mounted = false; };
+
+    return () => {
+      mounted = false;
+    };
   }, [authed]);
 
-  const today = useMemo(() => new Date().toLocaleDateString(), []);
+  const today = useMemo(() => {
+    try {
+      return new Date().toLocaleDateString();
+    } catch {
+      return "";
+    }
+  }, []);
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
       {/* Hero */}
       <header className="mx-auto max-w-6xl px-6 pt-10">
-        <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-800 p-6 md:p-8 shadow-sm">
+        <div className={`${CARD} p-6 md:p-8`}>
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div>
               <p className="text-sm text-slate-500 dark:text-slate-300">{today}</p>
@@ -131,27 +158,27 @@ export default function Home() {
                 Hola{username ? `, ${username}` : ""} 👋
               </h1>
               <p className="mt-2 text-slate-600 dark:text-slate-300">
-                Accesos rápidos y último movimiento de tus formularios.
+                Accesos rápidos y tu actividad reciente.
               </p>
             </div>
 
             <div className="flex gap-3">
               <Link
                 href="/formulario"
-                className="inline-flex items-center justify-center rounded-xl bg-sky-600 hover:bg-sky-700 text-white px-4 py-2.5 text-sm font-medium shadow"
+                className={`${BTN} bg-sky-600 hover:bg-sky-700 text-white shadow`}
               >
                 Nuevo registro
               </Link>
               <Link
                 href="/historial"
-                className="inline-flex items-center justify-center rounded-xl border border-slate-200 dark:border-white/15 px-4 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-100 hover:bg-slate-100/70 dark:hover:bg-white/5"
+                className={`${BTN} border border-slate-200 dark:border-white/15 text-slate-700 dark:text-slate-100 hover:bg-slate-100/70 dark:hover:bg-white/5`}
               >
                 Ver historial
               </Link>
               {isStaff && (
                 <Link
                   href="/admin"
-                  className="inline-flex items-center justify-center rounded-xl border border-amber-300/50 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 px-4 py-2.5 text-sm font-semibold"
+                  className={`${BTN} border border-amber-300/50 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 font-semibold`}
                 >
                   Panel admin
                 </Link>
@@ -162,9 +189,9 @@ export default function Home() {
       </header>
 
       <main className="mx-auto max-w-6xl px-6 pb-14">
-        {/* Si no está logueado, mostramos home “ligero” sin redirecciones */}
+        {/* Home ligero (no logueado) */}
         {authed === false && (
-          <section className="mt-8 rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-800 p-6">
+          <section className={`mt-8 ${CARD} p-6`}>
             <h2 className="text-base font-semibold text-slate-900 dark:text-white">Bienvenido</h2>
             <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
               Inicia sesión para ver tus cuestionarios y movimientos recientes.
@@ -172,7 +199,7 @@ export default function Home() {
             <div className="mt-4">
               <Link
                 href="/login"
-                className="inline-flex items-center justify-center rounded-xl bg-sky-600 hover:bg-sky-700 text-white px-4 py-2.5 text-sm font-medium shadow"
+                className={`${BTN} bg-sky-600 hover:bg-sky-700 text-white shadow`}
               >
                 Iniciar sesión
               </Link>
@@ -180,20 +207,18 @@ export default function Home() {
           </section>
         )}
 
-        {/* Si está logueado, mostramos dashboard */}
+        {/* Dashboard (logueado) */}
         {authed === true && (
           <>
-            {/* Error / aviso */}
             {err && (
               <div className="mt-6 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900/40 dark:bg-rose-950/40 dark:text-rose-200 p-4">
                 No pudimos cargar algunos datos. Puedes seguir usando los atajos de arriba.
               </div>
             )}
 
-            {/* Tarjetas principales */}
             <section className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">
               {/* Cuestionarios */}
-              <div className="md:col-span-2 rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-800 shadow-sm">
+              <div className={`md:col-span-2 ${CARD}`}>
                 <div className="px-5 py-4 border-b border-slate-100 dark:border-white/10">
                   <h2 className="text-base font-semibold text-slate-900 dark:text-white">
                     Cuestionarios disponibles
@@ -224,8 +249,8 @@ export default function Home() {
                           href={`/formulario?questionnaire_id=${q.id}`}
                           className="group flex items-center justify-between rounded-xl border border-slate-200 dark:border-white/10 px-4 py-3 hover:bg-slate-50 dark:hover:bg-white/5"
                         >
-                          <div>
-                            <p className="font-medium text-slate-900 dark:text-white">
+                          <div className="min-w-0">
+                            <p className="font-medium text-slate-900 dark:text-white truncate">
                               {q.title}
                             </p>
                             <p className="text-xs text-slate-500 dark:text-slate-300">
@@ -243,7 +268,7 @@ export default function Home() {
               </div>
 
               {/* Últimos movimientos */}
-              <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-800 shadow-sm">
+              <div className={`${CARD}`}>
                 <div className="px-5 py-4 border-b border-slate-100 dark:border-white/10">
                   <h2 className="text-base font-semibold text-slate-900 dark:text-white">
                     Últimos movimientos
@@ -292,10 +317,7 @@ export default function Home() {
                   </ul>
 
                   <div className="mt-4 text-right">
-                    <Link
-                      className="text-sm text-sky-600 hover:text-sky-700"
-                      href="/historial"
-                    >
+                    <Link className="text-sm text-sky-600 hover:text-sky-700" href="/historial">
                       Ver todo el historial →
                     </Link>
                   </div>
@@ -337,5 +359,3 @@ export default function Home() {
     </div>
   );
 }
-
-

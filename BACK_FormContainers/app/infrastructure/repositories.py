@@ -22,6 +22,7 @@ from app.domain.repositories import (
     ChoiceRepository,
     QuestionnaireRepository,
     UserPK,
+    ActorRepository,
 )
 from app.infrastructure.models import (
     Answer as AnswerModel,
@@ -322,6 +323,13 @@ class DjangoSubmissionRepository(SubmissionRepository):
         model = self.detail_queryset().filter(id=id).first()
         return self._model_to_entity(model) if model else None
 
+    def get_for_api(self, id: UUID):
+        """
+        Devuelve el modelo Django de Submission con relaciones y respuestas
+        prefetch-eadas para serialización en la API.
+        """
+        return self.detail_queryset().filter(id=id).first()
+
     def history_aggregate(self, *, fecha_desde=None, fecha_hasta=None):
         base = SubmissionModel.objects.filter(regulador_id__isnull=False, finalizado=True)
 
@@ -448,6 +456,16 @@ class DjangoQuestionRepository(QuestionRepository):
             .first()
         )
         return self._model_to_entity(model) if model else None
+    
+    def get_by_id(self, id: str) -> Optional[QuestionModel]:
+        """
+        Retorna el modelo Question por id (UUID en str) o None si no existe.
+        No lanza excepción hacia la vista.
+        """
+        try:
+            return QuestionModel.objects.get(id=id)
+        except QuestionModel.DoesNotExist:
+            return None
 
     # Explicit mapping functions
     def _model_to_entity(self, model: QuestionModel) -> DQ:
@@ -495,7 +513,22 @@ class DjangoChoiceRepository(ChoiceRepository):
 # --------------------------------------------
 # Actors (queries públicos/admin para catálogos)
 # --------------------------------------------
-class DjangoActorRepository:
+class DjangoActorRepository(ActorRepository):
+    def get(self, id: UUID):
+        from app.infrastructure.models import Actor as ActorModel
+        try:
+            obj = ActorModel.objects.get(id=id, activo=True)
+            return obj  # devolvemos el modelo; los serializers manuales ya lo toleran
+        except ActorModel.DoesNotExist:
+            return None
+    
+    def list_by_type(self, tipo: str, *, search: Optional[str] = None, limit: int = 50):
+        from app.infrastructure.models import Actor as ActorModel
+        qs = ActorModel.objects.filter(activo=True, tipo=tipo)
+        if search:
+            qs = qs.filter(Q(nombre__icontains=search) | Q(documento__icontains=search))
+        return list(qs.order_by("nombre")[:limit])
+    
     def public_list(self, params):
         qs = ActorModel.objects.filter(activo=True)
         tipo = params.get("tipo")

@@ -29,6 +29,10 @@ class ChoiceRepository(Protocol):
         """Retorna la opción (objeto del modelo/DTO mínimo) o None."""
         ...
 
+class ActorRepository(Protocol):
+    """Puerto mínimo para validar/consultar actores existentes."""
+    def get(self, id: UUID): ...
+    def list_by_type(self, tipo: str, *, search: Optional[str] = None, limit: int = 50): ...
 
 class AnswerRepository(Protocol):
     """

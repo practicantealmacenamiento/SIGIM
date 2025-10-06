@@ -1,14 +1,16 @@
 from pathlib import Path
 import os
-import environ
+import socket
+from environ import Env
 
 # =========================
 # Paths & .env
 # =========================
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-env = environ.Env()
-environ.Env.read_env(os.path.join(BASE_DIR, ".env"))
+env = Env()
+# Carga .env en BASE_DIR si existe
+Env.read_env(os.path.join(BASE_DIR, ".env"))
 
 # =========================
 # Seguridad (dev)
@@ -17,17 +19,16 @@ SECRET_KEY = env("SECRET_KEY", default="PrebelAyT")
 DEBUG = env.bool("DEBUG", default=True)
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1", "[::1]", "0.0.0.0"])
 
+# Amplía hosts locales automáticamente en dev (hostname + IPs reales)
 if DEBUG:
-    import socket
     try:
         hostname = socket.gethostname()
         local_ips = list(set(socket.gethostbyname_ex(hostname)[2]))
-        # Evita duplicados y agrega hostname/ip locales automáticamente en dev
         ALLOWED_HOSTS = list(set(ALLOWED_HOSTS + [hostname] + local_ips))
     except Exception:
-        # Si falla la resolución, seguimos con lo definido en .env
         pass
 
+# Google Vision: exporta al entorno si viene por .env
 gcred = env("GOOGLE_APPLICATION_CREDENTIALS", default="")
 if gcred and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = gcred
@@ -56,8 +57,8 @@ INSTALLED_APPS = [
 # Middleware
 # =========================
 MIDDLEWARE = [
-    "corsheaders.middleware.CorsMiddleware",      # CORS primero
-    "django.middleware.security.SecurityMiddleware",
+    "django.middleware.security.SecurityMiddleware",   # Seguridad primero
+    "corsheaders.middleware.CorsMiddleware",          # CORS alto y antes de Common
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -71,8 +72,8 @@ MIDDLEWARE = [
 # =========================
 from corsheaders.defaults import default_headers
 
-CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOW_CREDENTIALS = env.bool("CORS_ALLOW_CREDENTIALS", default=True)
+CORS_ALLOW_ALL_ORIGINS = True
 
 # Orígenes del front (Next/Vite)
 CORS_ALLOWED_ORIGINS = env.list(
@@ -84,50 +85,45 @@ CORS_ALLOWED_ORIGINS = env.list(
         "http://127.0.0.1:5173",
         "http://172.24.66.25:3000",
         "http://172.24.66.23:3000",
-        "http://172.24.66.23",
+        "http://172.24.66.23:53862",
     ],
 )
 
-# Permite IP local (LAN) tipo 192.168.x.x:3000/5173
+# Permite IP local (LAN) tipo 192.168.x.x / 10.x.x.x / 172.16-31.x.x en 3000/5173
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://((192\.168|10|172\.(1[6-9]|2\d|3[0-1]))\.\d{1,3}\.\d{1,3})(:3000|:5173)?$",
 ]
 
-# Asegura que el navegador permita enviar Authorization/CSRF si lo usas
+# Asegura Authorization/CSRF
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "authorization",
     "x-csrftoken",
 ]
 
-# 🚩 IMPORTANTE: CSRF confía SOLO en lista explícita (no regex). La leemos de .env.
-CSRF_TRUSTED_ORIGINS = env.list(
-    "CSRF_TRUSTED_ORIGINS",
-    default=CORS_ALLOWED_ORIGINS,
-)
+# CSRF: confía SOLO en lista explícita (no regex). Base desde .env o CORS_ALLOWED_ORIGINS.
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=CORS_ALLOWED_ORIGINS)
 
+# Si quieres duplicar http:// -> https:// para CSRF (cuando uses proxy HTTPS), activa en .env:
+# CSRF_INCLUDE_HTTPS_MIRROR=True
+if env.bool("CSRF_INCLUDE_HTTPS_MIRROR", default=False):
+    mirrors = []
+    for origin in CSRF_TRUSTED_ORIGINS:
+        if origin.startswith("http://"):
+            mirrors.append(origin.replace("http://", "https://", 1))
+    CSRF_TRUSTED_ORIGINS = list(set(CSRF_TRUSTED_ORIGINS + mirrors))
+
+# En DEBUG añadimos SOLO hostname/IPs locales reales (evita listas gigantes)
 if DEBUG:
-    # Añade dinámicamente todos los posibles orígenes LAN (para pruebas en cualquier ciudad/red)
-    trusted = set(CSRF_TRUSTED_ORIGINS) if isinstance(CSRF_TRUSTED_ORIGINS, list) else set(list(CSRF_TRUSTED_ORIGINS))
     try:
         hostname = socket.gethostname()
-        local_ips = set(socket.gethostbyname_ex(hostname)[2])
-        # Segmentos LAN comunes (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-        lan_prefixes = ["192.168", "10.", "172.16", "172.17", "172.18", "172.19", "172.20", "172.21", "172.22", "172.23", "172.24", "172.25", "172.26", "172.27", "172.28", "172.29", "172.30", "172.31"]
-        for pre in lan_prefixes:
-            for x in range(0, 256):
-                ip = f"{pre}.{x}"
-                trusted.add(f"http://{ip}:3000")
-                trusted.add(f"http://{ip}:5173")
-        # Agrega tus IPs locales reales
+        local_ips = list(set(socket.gethostbyname_ex(hostname)[2]))
+        extras = {f"http://{hostname}:3000", f"http://{hostname}:5173"}
         for ip in local_ips:
-            trusted.add(f"http://{ip}:3000")
-            trusted.add(f"http://{ip}:5173")
-        # El hostname local (útil si accedes por nombre en LAN)
-        trusted.add(f"http://{hostname}:3000")
-        trusted.add(f"http://{hostname}:5173")
-        CSRF_TRUSTED_ORIGINS = list(trusted)
+            extras.add(f"http://{ip}:3000")
+            extras.add(f"http://{ip}:5173")
+        CSRF_TRUSTED_ORIGINS = list(set(CSRF_TRUSTED_ORIGINS + list(extras)))
     except Exception as e:
-        print("Error ampliando CSRF_TRUSTED_ORIGINS:", e)
+        print("CSRF_TRUSTED_ORIGINS (debug) — no se pudo ampliar dinámicamente:", e)
 
 # Cookies de sesión/CSRF para SPA en dev
 SESSION_COOKIE_SAMESITE = "Lax"
@@ -137,11 +133,11 @@ CSRF_COOKIE_SECURE = False
 SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_NAME = "csrftoken"
 
-# Configuración adicional para mejorar el manejo de sesiones
-SESSION_COOKIE_AGE = 86400  # 24 horas
+# Configuración adicional para mejorar manejo de sesiones
+SESSION_COOKIE_AGE = 86400  # 24h
 SESSION_SAVE_EVERY_REQUEST = True
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
-SESSION_COOKIE_DOMAIN = None  # Permite cookies en localhost
+SESSION_COOKIE_DOMAIN = None  # cookies válidas para el host actual
 
 # Si sirves detrás de proxy (ngrok/traefik), descomenta:
 # SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -211,6 +207,7 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 32 * 1024 * 1024
 # =========================
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "app.interfaces.auth.BearerOrTokenAuthentication",  # Acepta Bearer o Token
         "rest_framework.authentication.SessionAuthentication",
         "rest_framework.authentication.TokenAuthentication",
     ],
@@ -226,8 +223,21 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "API Registro de Camiones",
     "DESCRIPTION": "Backend (Django REST) para control de entradas y salidas con OCR (Google Vision).",
     "VERSION": "0.1.0",
-    "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
+    "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],  # las vistas privadas ya imponen IsAdminUser
     "SWAGGER_UI_SETTINGS": {"persistAuthorization": True},
+    "COMPONENT_SPLIT_REQUEST": True,  # request/response separados
+    "SECURITY": [
+        {"bearerAuth": []},  # Authorization: Bearer <token>
+        {"tokenAuth": []},   # Authorization: Token <key>
+        {"cookieAuth": []},  # Session + CSRF
+    ],
+    "COMPONENTS": {
+        "securitySchemes": {
+            "bearerAuth": {"type": "http", "scheme": "bearer"},
+            "tokenAuth": {"type": "apiKey", "in": "header", "name": "Authorization"},
+            "cookieAuth": {"type": "apiKey", "in": "cookie", "name": "sessionid"},
+        }
+    },
 }
 
 # =========================

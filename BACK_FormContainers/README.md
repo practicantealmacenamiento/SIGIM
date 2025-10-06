@@ -1,30 +1,23 @@
-En este archivo tendremos la configuración y librerias necesarias para comenzar un proyecto de DRF como Backend para las aplicaciones
+# API Registro de Camiones — Backend (Django REST, Hexagonal)
 
-1. Configuración de variables de entorno
+Arquitectura **Hexagonal/Clean** con capas `domain/`, `application/`, `infrastructure/`, `interfaces/`.
+Servicios desacoplados del ORM, puertos/adaptadores para OCR/Storage y serializers manuales.
 
-- APIS
-- Contraseñas
-- Dominios y puertos
+## Tecnologías
+- Django, Django REST Framework
+- drf-spectacular (OpenAPI)
+- django-cors-headers, django-environ
+- (Opcional) Google Cloud Vision
 
-2. Apps de terceros tales como:
+## Entorno
+Crea `.env` (ya incluido de ejemplo):
 
-- corsheaders
-- rest_framework
-- drf_spectacular (Swagger)
-- celery
-- redis
-- keyClak
-- pytest (Pruebas unitarias)
+```env
+DEBUG=True
+SECRET_KEY=dev-secret-key
+ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0,[::1]
+CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173
+CSRF_TRUSTED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+API_SECRET_TOKEN=dev-123456
+GOOGLE_APPLICATION_CREDENTIALS=/ruta/a/credenciales.json
 
-3. Configuración de despliegue
-
-- Docker
-- WSGI - Waitress
-
-4. Arquitectura
-
-- Arquitectura hexagonal combinada con Microservicios
-- Adaptada al entorno de Prebel
-- Permite trabajar con Aplicaciones con o sin base de datos
-- Permite adaptarse a las necesidades de la aplicación
-- Cumple con Patron de

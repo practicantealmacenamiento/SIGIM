@@ -14,21 +14,21 @@ export type ActorLite = {
 
 export type SubmissionLite = {
   id: UUID;
-  questionnaire: UUID;
+  questionnaire: string;
   questionnaire_title: string | null;
   tipo_fase: "entrada" | "salida";
   placa_vehiculo: string | null;
-  regulador_id: UUID | null;
+  regulador_id: string | null;
   finalizado: boolean;
   fecha_cierre: string | null;
+  answers?: AnswerDetail[];
 
-  // Estos campos pueden NO venir en el historial y por eso los hidratamos:
-  proveedor_id?: UUID | null;
-  transportista_id?: UUID | null;
-  receptor_id?: UUID | null;
-  proveedor?: ActorLite | null;
-  transportista?: ActorLite | null;
-  receptor?: ActorLite | null;
+  proveedor_id?: string | null;
+  proveedor?: { id?: string; nombre?: string; documento?: string } | null;
+  transportista_id?: string | null;
+  transportista?: { id?: string; nombre?: string; documento?: string } | null;
+  receptor_id?: string | null;
+  receptor?: { id?: string; nombre?: string; documento?: string } | null;
 };
 
 export type HistorialItem = {
@@ -42,7 +42,7 @@ export type HistorialItem = {
 
 /* --------------------------- Utilidades fetch ---------------------------- */
 function hdr(method: string) {
-  return { method, credentials: "include" as const };
+  return { method, credentials: "include" as const }
 }
 
 async function parseOrThrow<T>(res: Response, fallback: string): Promise<T> {
@@ -71,11 +71,13 @@ export async function fetchHistorial(params: {
   if (params.solo_completados !== false) url.searchParams.set("solo_completados", "1");
 
   const res = await fetch(url.toString(), hdr("GET"));
-  const data = await parseOrThrow<HistorialItem[]>(res, "No se pudo cargar el historial");
-  const items = Array.isArray(data) ? data : [];
+  const data = await parseOrThrow<any>(res, "No se pudo cargar el historial");
+
+  // ✅ Soporta ambos formatos: array directo o paginado { results, count }
+  const list = Array.isArray(data) ? data : (data?.results ?? []);
 
   // 🔒 Dedupe temprano por si el backend trae repetidos
-  return dedupeHistorialItems(items);
+  return dedupeHistorialItems(list as HistorialItem[]);
 }
 
 /* --------- Detalle de submission (para hidratar actores y para UI) -------- */
@@ -108,9 +110,8 @@ export type SubmissionDetail = {
 };
 
 export async function fetchSubmissionDetail(id: string): Promise<SubmissionDetail> {
-  const res = await fetch(`${API_BASE}/submissions/${id}/`, { credentials: "omit" });
-  if (!res.ok) throw new Error("No se pudo cargar la submission");
-  return res.json();
+  const res = await fetch(`${API_BASE}/submissions/${id}/`, { credentials: "include" as const });
+  return await parseOrThrow<SubmissionDetail>(res, "No se pudo cargar la submission");
 }
 
 /* --------------------- Helpers de visualización/actor -------------------- */
@@ -120,33 +121,33 @@ export function displayPlacaFromItem(it: HistorialItem): string {
   ).toUpperCase();
 }
 
-// compat con el nombre previo
-export const displayPlaca = displayPlacaFromItem;
-
-export function getActor(
-  it: HistorialItem,
-  tipo: "proveedor" | "transportista" | "receptor"
-): ActorLite | null {
-  const f2 = it.fase2 as any;
-  const f1 = it.fase1 as any;
-  return (f2 && f2[tipo]) || (f1 && f1[tipo]) || null;
+export function getActor(sub: SubmissionLite | null | undefined, tipo: "proveedor" | "transportista" | "receptor"): ActorLite | null {
+  if (!sub) return null;
+  if (tipo === "proveedor") {
+    return sub.proveedor_id || sub.proveedor
+      ? { id: String(sub.proveedor_id || sub.proveedor?.id || ""), tipo: "PROVEEDOR", nombre: sub.proveedor?.nombre || "", documento: sub.proveedor?.documento ?? null }
+      : null;
+  }
+  if (tipo === "transportista") {
+    return sub.transportista_id || sub.transportista
+      ? { id: String(sub.transportista_id || sub.transportista?.id || ""), tipo: "TRANSPORTISTA", nombre: sub.transportista?.nombre || "", documento: sub.transportista?.documento ?? null }
+      : null;
+  }
+  // receptor
+  return sub.receptor_id || sub.receptor
+    ? { id: String(sub.receptor_id || sub.receptor?.id || ""), tipo: "RECEPTOR", nombre: sub.receptor?.nombre || "", documento: sub.receptor?.documento ?? null }
+    : null;
 }
 
-export function matchesActor(
-  it: HistorialItem,
-  actorId: UUID,
-  tipo: "proveedor" | "transportista" | "receptor"
-): boolean {
-  const f1 = it.fase1 as any;
-  const f2 = it.fase2 as any;
-  const idKey = (tipo + "_id") as "proveedor_id" | "transportista_id" | "receptor_id";
-  return Boolean(
-    (f2 && f2[idKey] && String(f2[idKey]) === String(actorId)) ||
-      (f1 && f1[idKey] && String(f1[idKey]) === String(actorId))
-  );
+export function matchesActor(actor: ActorLite | null, text: string): boolean {
+  if (!actor) return false;
+  const n = norm(actor.nombre || "");
+  const d = norm(actor.documento || "");
+  const t = norm(text || "");
+  return !!t && (n.includes(t) || d.includes(t));
 }
 
-export function displayActor(actor?: ActorLite | null): string {
+export function displayActor(actor: ActorLite | null): string {
   if (!actor) return "";
   const base = actor.nombre?.trim() || "";
   const doc = (actor.documento || "").trim();
@@ -162,92 +163,61 @@ async function fetchDetailsBatch(ids: string[], maxConcurrent = 6) {
   for (let i = 0; i < need.length; i += maxConcurrent) {
     const slice = need.slice(i, i + maxConcurrent);
     const chunk = await Promise.allSettled(slice.map((id) => fetchSubmissionDetail(id)));
-    chunk.forEach((res, idx) => {
-      const id = slice[idx];
-      if (res.status === "fulfilled") detailCache.set(id, res.value);
-    });
-  }
-  return detailCache;
-}
-
-/**
- * Recorre items y, si a alguna fase le faltan actores (ids u objetos),
- * trae el detalle y fusiona proveedor/transportista.
- */
-export async function hydrateActors(
-  items: HistorialItem[],
-  opts?: { maxConcurrent?: number }
-): Promise<HistorialItem[]> {
-  // 1) recolectar ids que necesitan hidratarse
-  const ids: string[] = [];
-  for (const it of items) {
-    for (const sub of [it.fase1 as any, it.fase2 as any]) {
-      if (!sub?.id) continue;
-      const hasProv = "proveedor" in sub || "proveedor_id" in sub;
-      const hasTrans = "transportista" in sub || "transportista_id" in sub;
-      if (!hasProv || !hasTrans) ids.push(sub.id);
+    for (let j = 0; j < slice.length; j++) {
+      const k = slice[j];
+      const r = chunk[j];
+      if (r.status === "fulfilled") {
+        detailCache.set(k, r.value);
+      }
     }
   }
-  if (ids.length === 0) return items;
+}
 
-  // 2) fetch detalles y cache
-  await fetchDetailsBatch(Array.from(new Set(ids)), opts?.maxConcurrent ?? 6);
-
-  // 3) fusionar
+export async function hydrateActors(items: HistorialItem[], opts?: { maxConcurrent?: number }) {
+  // 1) recolectar ids que necesitan hidratarse
+  const ids = new Set<string>();
+  for (const it of items) {
+    if (it.fase1?.id) ids.add(it.fase1.id);
+    if (it.fase2?.id) ids.add(it.fase2.id);
+  }
+  // 2) fetch en batch
+  await fetchDetailsBatch(Array.from(ids), Math.max(2, opts?.maxConcurrent ?? 6));
+  // 3) merge de actores en items
   return items.map((it) => {
-    const fase = (k: "fase1" | "fase2") => {
-      const base = (it[k] || null) as any;
-      if (!base?.id) return base;
-      const det = detailCache.get(base.id);
-      if (!det) return base;
-      // copia superficial + merge de actores si faltan
-      const merged: any = { ...base };
-      if (!("proveedor_id" in merged) && (det.proveedor_id || det.proveedor?.id)) {
-        merged.proveedor_id = det.proveedor_id ?? det.proveedor?.id ?? null;
+    const merged: HistorialItem = JSON.parse(JSON.stringify(it));
+    if (it.fase1?.id) {
+      const det = detailCache.get(it.fase1.id);
+      if (det) {
+        if (!("proveedor_id" in merged) && (det.proveedor_id || det.proveedor?.id)) {
+          (merged as any).proveedor_id = det.proveedor_id || det.proveedor?.id || null;
+          (merged as any).proveedor = det.proveedor || null;
+        }
+        if (!("transportista_id" in merged) && (det.transportista_id || det.transportista?.id)) {
+          (merged as any).transportista_id = det.transportista_id || det.transportista?.id || null;
+          (merged as any).transportista = det.transportista || null;
+        }
       }
-      if (!("proveedor" in merged) && det.proveedor) {
-        merged.proveedor = det.proveedor as any;
+    }
+    if (it.fase2?.id) {
+      const det = detailCache.get(it.fase2.id);
+      if (det) {
+        if (!("proveedor_id" in merged) && (det.proveedor_id || det.proveedor?.id)) {
+          (merged as any).proveedor_id = det.proveedor_id || det.proveedor?.id || null;
+          (merged as any).proveedor = det.proveedor || null;
+        }
+        if (!("transportista_id" in merged) && (det.transportista_id || det.transportista?.id)) {
+          (merged as any).transportista_id = det.transportista_id || det.transportista?.id || null;
+          (merged as any).transportista = det.transportista || null;
+        }
       }
-      if (!("transportista_id" in merged) && (det.transportista_id || det.transportista?.id)) {
-        merged.transportista_id = det.transportista_id ?? det.transportista?.id ?? null;
-      }
-      if (!("transportista" in merged) && det.transportista) {
-        merged.transportista = det.transportista as any;
-      }
-      return merged;
-    };
-    return { ...it, fase1: fase("fase1"), fase2: fase("fase2") };
+    }
+    return merged;
   });
 }
 
-/* ---------------------- Enriquecimiento para la UI ---------------------- */
-export type HistorialRow = {
-  regulador_id: UUID | null;
-  placa: string;
-
-  contenedor: string | null; // compat (no filtra)
-  muelle: string | null;     // no se usa en historial
-
-  estado: "completo" | "pendiente";
-  fase1_id: UUID | null;
-  fase2_id: UUID | null;
-  fecha_entrada: string | null;
-  fecha_salida: string | null;
-  ultima_fecha_cierre: string | null;
-
-  tiempo_estadia_ms: number | null;
-  tiempo_estadia_humano: string | null;
-
-  cuestionario_fase1?: string | null;
-  cuestionario_fase2?: string | null;
-
-  proveedor?: ActorLite | null;
-  transportista?: ActorLite | null;
-};
-
-function humanizeDuration(ms?: number | null) {
-  if (!ms || ms < 0) return null;
-  const m = Math.floor(ms / 60000);
+/* ------------------------- Enriquecimiento de filas ---------------------- */
+function humanizeMinutes(m: number | null): string {
+  if (!m && m !== 0) return "";
   const d = Math.floor(m / (60 * 24));
   const h = Math.floor((m % (60 * 24)) / 60);
   const mm = m % 60;
@@ -257,6 +227,25 @@ function humanizeDuration(ms?: number | null) {
   parts.push(`${mm}m`);
   return parts.join(" ");
 }
+
+export type HistorialRow = {
+  regulador_id: string | null;
+  placa: string;
+  contenedor: string | null;
+  muelle: string | null;
+  estado: "completo" | "pendiente";
+  fase1_id: string | null;
+  fase2_id: string | null;
+  fecha_entrada: string | null;
+  fecha_salida: string | null;
+  ultima_fecha_cierre: string | null;
+  tiempo_estadia_min: number | null;
+  tiempo_estadia_humano: string | null;
+  proveedor: { id?: string; nombre?: string; documento?: string } | null;
+  transportista: { id?: string; nombre?: string; documento?: string } | null;
+  cuestionario_fase1?: string | null;
+  cuestionario_fase2?: string | null;
+};
 
 export function enrichHistorial(items: HistorialItem[]): HistorialRow[] {
   return items
@@ -284,75 +273,51 @@ export function enrichHistorial(items: HistorialItem[]): HistorialRow[] {
         fecha_entrada,
         fecha_salida,
         ultima_fecha_cierre: it.ultima_fecha_cierre || fecha_salida || fecha_entrada || null,
-        tiempo_estadia_ms: ms,
-        tiempo_estadia_humano: humanizeDuration(ms),
-        cuestionario_fase1: f1?.questionnaire_title ?? null,
-        cuestionario_fase2: f2?.questionnaire_title ?? null,
-        proveedor,
-        transportista,
-      };
+        tiempo_estadia_min: ms != null ? Math.round(ms / 60000) : null,
+        tiempo_estadia_humano: ms != null ? humanizeMinutes(Math.round(ms / 60000)) : null,
+        proveedor: proveedor || null,
+        transportista: transportista || null,
+        cuestionario_fase1: f1?.questionnaire_title || null,
+        cuestionario_fase2: f2?.questionnaire_title || null,
+      } as HistorialRow;
     })
-    .sort((a, b) => {
-      const ta = a.ultima_fecha_cierre ? Date.parse(a.ultima_fecha_cierre) : 0;
-      const tb = b.ultima_fecha_cierre ? Date.parse(b.ultima_fecha_cierre) : 0;
-      return tb - ta; // más reciente primero
-    });
+    .filter(Boolean);
 }
 
-/* ---------------------- Deduplicación (core de fix) ---------------------- */
-// Clave única robusta a ausencia de regulador_id
-function makeItemKey(it: HistorialItem) {
-  const f1 = it.fase1?.id ?? "_";
-  const f2 = it.fase2?.id ?? "_";
-  const reg = it.regulador_id ?? "_";
-  const placa = (it.placa_vehiculo || it.fase1?.placa_vehiculo || it.fase2?.placa_vehiculo || "_").toUpperCase();
-  return `${reg}::${f1}::${f2}::${placa}`;
+/* --------------------------- Dedupe defensivo ---------------------------- */
+function keyForItem(it: HistorialItem): string {
+  const placa = (displayPlacaFromItem(it) || "").toUpperCase();
+  const f1 = it.fase1?.id || "";
+  const f2 = it.fase2?.id || "";
+  const ult = it.ultima_fecha_cierre || "";
+  return `${placa}::${f1}::${f2}::${ult}`;
 }
-
-// Preferir el que tenga más fases cerradas; si empata, el más reciente
-function scoreItem(x: HistorialItem) {
-  const n = (x.fase1 ? 1 : 0) + (x.fase2 ? 1 : 0);
-  const t = Date.parse(x.ultima_fecha_cierre || x.fase2?.fecha_cierre || x.fase1?.fecha_cierre || "1970-01-01T00:00:00Z");
-  return [n, t] as const;
-}
-function pickBetterItem(a: HistorialItem, b: HistorialItem) {
-  const [na, ta] = scoreItem(a);
-  const [nb, tb] = scoreItem(b);
-  if (na !== nb) return na > nb ? a : b;
-  return ta >= tb ? a : b;
-}
-
-export function dedupeHistorialItems(input: HistorialItem[]): HistorialItem[] {
-  const map = new Map<string, HistorialItem>();
-  for (const it of input) {
-    const key =
-      it.regulador_id ||
-      makeItemKey(it); // si no hay regulador, usamos una clave compuesta
-    const prev = map.get(key);
-    map.set(key, prev ? pickBetterItem(prev, it) : it);
+export function dedupeHistorialItems(items: HistorialItem[]): HistorialItem[] {
+  const seen = new Set<string>();
+  const out: HistorialItem[] = [];
+  for (const it of items) {
+    const k = keyForItem(it);
+    if (!seen.has(k)) {
+      seen.add(k);
+      out.push(it);
+    }
   }
-  return Array.from(map.values());
+  return out;
 }
 
-// Dedup de filas enriquecidas (defensa extra por si algo se “coló”)
-function makeRowKey(r: HistorialRow) {
-  return `${r.regulador_id ?? "_"}::${r.fase1_id ?? "_"}::${r.fase2_id ?? "_"}::${r.placa ?? "_"}`;
-}
-function scoreRow(x: HistorialRow) {
-  const n = (x.fase1_id ? 1 : 0) + (x.fase2_id ? 1 : 0);
-  const t = Date.parse(x.ultima_fecha_cierre || "1970-01-01T00:00:00Z");
-  return [n, t] as const;
-}
-function pickBetterRow(a: HistorialRow, b: HistorialRow) {
-  const [na, ta] = scoreRow(a);
-  const [nb, tb] = scoreRow(b);
-  if (na !== nb) return na > nb ? a : b;
-  return ta >= tb ? a : b;
+function pickBetterRow(a: HistorialRow, b: HistorialRow): HistorialRow {
+  // Preferimos la que tenga más info (fase2_id, proveedor, transportista, etc.)
+  const score = (r: HistorialRow) =>
+    (r.fase2_id ? 2 : 0) +
+    (r.proveedor?.id ? 1 : 0) +
+    (r.transportista?.id ? 1 : 0) +
+    (r.tiempo_estadia_min ? 1 : 0);
+  return score(b) > score(a) ? b : a;
 }
 export function dedupeRows(rows: HistorialRow[]): HistorialRow[] {
   const map = new Map<string, HistorialRow>();
   for (const r of rows) {
-    const k = r.regulador_id || makeRowKey(r);
+    const k = `${(r.placa || "").toUpperCase()}::${r.fase1_id || ""}::${r.fase2_id || ""}::${r.ultima_fecha_cierre || ""}`;
     const prev = map.get(k);
     map.set(k, prev ? pickBetterRow(prev, r) : r);
   }
@@ -368,7 +333,7 @@ export type HistorialQuery = {
   page?: number;
   pageSize?: number;
   actor_tipo?: "proveedor" | "transportista" | "todos";
-  actor_text?: string; // nombre/documento/id cuando no hay selección exacta
+  actor_text?: string; // nombre/documento
   actor_id_exact?: string | null; // si usas autocomplete y eliges uno
 };
 
@@ -391,49 +356,64 @@ export function filterSortPaginate(rows: HistorialRow[], q: HistorialQuery = {})
     actor_id_exact = null,
   } = q;
 
+  let out = [...rows];
+
+  // 1) Filtro por estado
+  if (estado !== "todos") {
+    out = out.filter((r) => r.estado === estado);
+  }
+
+  // 2) Filtro por placa (search)
   const s = norm(search);
-  const actxt = norm(actor_text);
+  if (s) {
+    out = out.filter((r) => norm(r.placa).includes(s));
+  }
 
-  // (1) filtro
-  let base = rows.filter((r) => {
-    const okEstado = estado === "todos" ? true : r.estado === estado;
-    const okSearch = !s ? true : norm(r.placa).includes(s);
+  // 3) Filtros por actor
+  if (actor_tipo !== "todos" || actor_text || actor_id_exact) {
+    out = out.filter((r) => {
+      const actor =
+        actor_tipo === "proveedor" ? r.proveedor : actor_tipo === "transportista" ? r.transportista : null;
 
-    let okActor = true;
-    if (actor_tipo !== "todos") {
-      const a = (r as any)[actor_tipo] as ActorLite | null;
-      okActor = !!a;
-      if (okActor && actor_id_exact) {
-        okActor = String(a?.id || "") === String(actor_id_exact);
-      } else if (okActor && actxt) {
-        const blob = `${a?.nombre || ""} ${a?.documento || ""} ${a?.id || ""}`;
-        okActor = norm(blob).includes(actxt);
+      if (actor_id_exact) {
+        return (actor?.id || "") === actor_id_exact;
       }
-    } else if (actxt) {
-      const blob = `${r.proveedor?.nombre || ""} ${r.proveedor?.documento || ""} ${r.transportista?.nombre || ""} ${r.transportista?.documento || ""}`;
-      okActor = norm(blob).includes(actxt);
+      if (actor_text) {
+        const nn = norm(actor?.nombre || "");
+        const nd = norm(actor?.documento || "");
+        const tt = norm(actor_text);
+        return !!tt && (nn.includes(tt) || nd.includes(tt));
+      }
+      // si no hay criterios, no filtramos
+      return true;
+    });
+  }
+
+  // 4) Orden
+  out.sort((a, b) => {
+    if (sort === "placa") {
+      const A = (a.placa || "").toUpperCase();
+      const B = (b.placa || "").toUpperCase();
+      const cmp = A.localeCompare(B);
+      return dir === "asc" ? cmp : -cmp;
     }
-
-    return okEstado && okSearch && okActor;
+    // reciente/antiguo usa ultima_fecha_cierre (fallback a fecha_salida/entrada)
+    const fa =
+      a.ultima_fecha_cierre || a.fecha_salida || a.fecha_entrada || "1900-01-01T00:00:00Z";
+    const fb =
+      b.ultima_fecha_cierre || b.fecha_salida || b.fecha_entrada || "1900-01-01T00:00:00Z";
+    const cmp = new Date(fa).getTime() - new Date(fb).getTime();
+    return sort === "antiguo" ? (dir === "asc" ? cmp : -cmp) : (dir === "asc" ? -cmp : cmp);
   });
 
-  // (2) orden
-  const mult = dir === "asc" ? 1 : -1;
-  base.sort((a, b) => {
-    if (sort === "placa") return a.placa.localeCompare(b.placa) * mult;
-    const ta = a.ultima_fecha_cierre ? Date.parse(a.ultima_fecha_cierre) : 0;
-    const tb = b.ultima_fecha_cierre ? Date.parse(b.ultima_fecha_cierre) : 0;
-    const recentCmp = tb - ta;
-    return (sort === "antiguo" ? -recentCmp : recentCmp) * (dir === "asc" ? -1 : 1);
-  });
-
-  // (3) paginación
+  // 5) Paginación
+  const count = out.length;
   const start = Math.max(0, (page - 1) * pageSize);
-  const results = base.slice(start, start + pageSize);
-  return { results, count: base.length };
+  const end = Math.min(out.length, start + pageSize);
+  return { results: out.slice(start, end), count };
 }
 
-/* ---------- Pipeline completo: trae → hidrata actores → enriquece → pagina ---------- */
+/* --------------- Pipeline: fetch + hydrate + enrich + filtros -------------- */
 export async function fetchHistorialEnriched(
   params: Parameters<typeof fetchHistorial>[0],
   query?: HistorialQuery,
@@ -452,7 +432,7 @@ export async function fetchHistorialEnriched(
   return filterSortPaginate(rows, query);
 }
 
-/* ------------------- Autocomplete remoto de actores (opcional) ------------------- */
+/* ------------------------------ Búsqueda actores -------------------------- */
 export async function searchActors(
   params: { tipo: "proveedor" | "transportista" | "receptor"; q?: string }
 ): Promise<ActorLite[]> {
@@ -470,8 +450,11 @@ export async function searchActors(
   if (params.q && params.q.trim()) url.searchParams.set("search", params.q.trim());
 
   const res = await fetch(url.toString(), hdr("GET"));
-  const data = await parseOrThrow<ActorLite[]>(res, "No se pudo buscar actores");
-  return Array.isArray(data) ? data.slice(0, 50) : [];
+  const data = await parseOrThrow<any>(res, "No se pudo buscar actores");
+
+  // ✅ Soporta ambos formatos
+  const list = Array.isArray(data) ? data : (data?.results ?? []);
+  return (list as ActorLite[]).slice(0, 50);
 }
 
 /* ----------------------------- Exportación CSV ---------------------------- */
@@ -479,34 +462,43 @@ export function exportHistorialCSV(rows: HistorialRow[], filename = "historial.c
   // Por si llaman con filas sin dedupe desde fuera
   const safeRows = dedupeRows(rows);
 
-  const header = [
+  const headers = [
     "Regulador ID",
     "Placa",
+    "Contenedor",
+    "Muelle",
     "Estado",
-    "Fase1 ID",
-    "Fase2 ID",
+    "Fase 1 ID",
+    "Fase 2 ID",
     "Fecha entrada",
     "Fecha salida",
-    "Última fecha",
-    "Tiempo estadía",
-    "Cuestionario F1",
-    "Cuestionario F2",
-    "Proveedor (nombre)",
-    "Proveedor (doc)",
-    "Transportista (nombre)",
-    "Transportista (doc)",
+    "Última fecha cierre",
+    "Tiempo estadía (min)",
+    "Tiempo estadía (humano)",
+    "Cuestionario Fase 1",
+    "Cuestionario Fase 2",
+    "Proveedor",
+    "Doc. Proveedor",
+    "Transportista",
+    "Doc. Transportista",
   ];
-  const lines = [header.join(",")];
+
+  const lines: string[] = [];
+  lines.push(headers.join(","));
+
   for (const r of safeRows) {
     const row = [
       r.regulador_id ?? "",
       r.placa ?? "",
-      r.estado ?? "",
+      r.contenedor ?? "",
+      r.muelle ?? "",
+      r.estado,
       r.fase1_id ?? "",
       r.fase2_id ?? "",
       r.fecha_entrada ?? "",
       r.fecha_salida ?? "",
       r.ultima_fecha_cierre ?? "",
+      r.tiempo_estadia_min ?? "",
       r.tiempo_estadia_humano ?? "",
       (r as any).cuestionario_fase_1 || r.cuestionario_fase1 || "",
       (r as any).cuestionario_fase_2 || r.cuestionario_fase2 || "",
@@ -519,7 +511,9 @@ export function exportHistorialCSV(rows: HistorialRow[], filename = "historial.c
       row
         .map((cell) => {
           const s = String(cell ?? "");
-          return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+          return /[",\n]/.test(s)
+            ? `"${s.replace(/"/g, '""')}"`
+            : s;
         })
         .join(",")
     );
@@ -534,5 +528,3 @@ export function exportHistorialCSV(rows: HistorialRow[], filename = "historial.c
   a.remove();
   URL.revokeObjectURL(url);
 }
-
-
