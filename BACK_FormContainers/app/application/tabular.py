@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID
-from dataclasses import replace
 
 from app.application.commands import (
     AddTableRowCommand, UpdateTableRowCommand, DeleteTableRowCommand,
@@ -76,11 +75,12 @@ class TabularFormService:
             grouped.setdefault(ri, []).append(a)
 
         results: List[TableRowResult] = []
+        actor_cache: Dict[str, Any] = {}
         for ri, items in sorted(grouped.items()):
             results.append(TableRowResult(
                 submission_id=submission.id,
                 row_index=ri,
-                values=self._answers_to_row_values(items)
+                values=self._answers_to_row_values(items, actor_cache)
             ))
         return results
 
@@ -125,6 +125,7 @@ class TabularFormService:
 
         # Procesar celdas
         saved: List[DAnswer] = []
+        actor_cache: Dict[str, Any] = {}
         for c in cells:
             q = self.question_repo.get(c.question_id)
             if not q:
@@ -138,11 +139,14 @@ class TabularFormService:
             if tag in {"proveedor", "transportista", "receptor"}:
                 if not c.actor_id:
                     raise ValidationError(message=f"Debe enviarse actor_id para la columna '{tag}'.", field="actor_id")
-                if not self.actor_repo.get(c.actor_id):
+                actor_obj = self.actor_repo.get(c.actor_id)
+                if not actor_obj:
                     raise BusinessRuleViolationError(message="El actor no existe o está inactivo.", rule_name="actor_must_exist")
                 # En columnas de actor, NO admitimos texto libre
-                answer_text = None
+                actor_name = getattr(actor_obj, "nombre", None) or getattr(actor_obj, "name", None)
+                answer_text = str(actor_name or c.actor_id)
                 extra_meta = {"actor_id": str(c.actor_id)}
+                actor_cache[str(c.actor_id)] = actor_obj
             else:
                 answer_text = (c.answer_text or "").strip() if c.answer_text else None
                 extra_meta = {}
@@ -182,11 +186,12 @@ class TabularFormService:
         return TableRowResult(
             submission_id=submission_id,
             row_index=row_index,
-            values=self._answers_to_row_values(saved)
+            values=self._answers_to_row_values(saved, actor_cache)
         )
 
-    def _answers_to_row_values(self, answers: List[DAnswer]) -> Dict[str, Dict[str, Any]]:
+    def _answers_to_row_values(self, answers: List[DAnswer], actor_cache: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
+        cache = actor_cache if actor_cache is not None else {}
         for a in answers:
             cell: Dict[str, Any] = {
                 "answer_text": a.answer_text,
@@ -195,6 +200,22 @@ class TabularFormService:
             }
             meta = a.meta or {}
             if "actor_id" in meta:
-                cell["actor_id"] = meta["actor_id"]
+                actor_id = str(meta["actor_id"])
+                cell["actor_id"] = actor_id
+                if actor_id not in cache:
+                    actor_obj = None
+                    try:
+                        actor_obj = self.actor_repo.get(UUID(actor_id))
+                    except Exception:
+                        actor_obj = None
+                    cache[actor_id] = actor_obj
+                actor_obj = cache.get(actor_id)
+                if actor_obj:
+                    nombre = getattr(actor_obj, "nombre", None) or getattr(actor_obj, "name", None)
+                    documento = getattr(actor_obj, "documento", None) or getattr(actor_obj, "nit", None) or getattr(actor_obj, "identificacion", None)
+                    if nombre:
+                        cell["actor_name"] = nombre
+                    if documento:
+                        cell["actor_document"] = documento
             out[str(a.question_id)] = cell
         return out

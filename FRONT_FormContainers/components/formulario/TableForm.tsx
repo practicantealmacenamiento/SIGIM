@@ -1,4 +1,19 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createTableRow,
+  deleteTableRow,
+  fetchCatalogActors,
+  getQuestionnaireGrid,
+  listSubmissionTableRows,
+  updateTableRow,
+} from "@/lib/api.form";
+import type {
+  ActorLite,
+  GridDefinition,
+  GridColumn,
+  TableRowCellsPayload,
+  TableRowRecord,
+} from "@/lib/api.form";
 
 /**
  * TableForm
@@ -8,43 +23,14 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  * Props mínimas:
  *  - questionnaireId: UUID del cuestionario (Fase 0)
  *  - submissionId: UUID de la submission activa
- *  - token: JWT/Bearer
  *
- * Opcionales:
- *  - apiBase: string (default "/api/v1")
+ * Opcional:
  *  - actorSearch?: (tipo: "PROVEEDOR"|"TRANSPORTISTA"|"RECEPTOR", q: string) => Promise<Array<{id:string;nombre:string;documento?:string}>>
  */
 
-type Column = {
-  question_id: string;
-  header: string;
-  width?: number | null;
-  order: number;
-  semantic_tag?: string | null; // "proveedor" | "transportista" | "receptor" | "placa" | ...
-  ui_hint?: string | null;      // "text" | "date" | "time" | "phone" | ...
-};
-
-type GridDef = {
-  questionnaire_id: string;
-  title: string;
-  version: string;
-  timezone: string;
-  columns: Column[];
-};
-
-type RowDTO = {
-  submission_id: string;
-  row_index: number;
-  values: Record<
-    string, // question_id
-    {
-      answer_text?: string | null;
-      answer_choice_id?: string | null;
-      answer_file_path?: string | null;
-      actor_id?: string | null;
-    }
-  >;
-};
+type Column = GridColumn;
+type GridDef = GridDefinition;
+type RowDTO = TableRowRecord;
 
 // Helpers
 
@@ -70,8 +56,6 @@ const useDebounced = (value: string, delay = 250) => {
 type Props = {
   questionnaireId: string;
   submissionId: string;
-  token: string;
-  apiBase?: string;
   actorSearch?: (
     tipo: "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR",
     q: string
@@ -81,8 +65,6 @@ type Props = {
 export default function TableForm({
   questionnaireId,
   submissionId,
-  token,
-  apiBase = "/api/v1",
   actorSearch,
 }: Props) {
   const [grid, setGrid] = useState<GridDef | null>(null);
@@ -91,6 +73,22 @@ export default function TableForm({
   const [savingRow, setSavingRow] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
+  const refreshRows = useCallback(async () => {
+    const payload = await listSubmissionTableRows(submissionId);
+    const rowsIn = Array.isArray(payload?.rows) ? payload.rows : [];
+    if (aliveRef.current) {
+      setRows(rowsIn);
+    }
+  }, [submissionId]);
+
   // --- carga layout y filas ---
   useEffect(() => {
     let mounted = true;
@@ -98,37 +96,34 @@ export default function TableForm({
       setLoading(true);
       setError(null);
       try {
-        // layout
-        const resL = await fetch(
-          `${apiBase}/cuestionarios/${questionnaireId}/grid/`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        if (!resL.ok) throw new Error(`Grid ${resL.status}`);
-        const layout: GridDef = await resL.json();
-        // ordenar columnas por order (defensivo)
-        layout.columns.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-        // filas existentes
-        const resR = await fetch(
-          `${apiBase}/submissions/${submissionId}/table-rows`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        if (!resR.ok) throw new Error(`Rows ${resR.status}`);
-        const payload = await resR.json();
-        const rowsIn: RowDTO[] = payload?.rows ?? [];
-        if (mounted) {
-          setGrid(layout);
+        if (!questionnaireId || !submissionId) {
+          return;
+        }
+        const layout = await getQuestionnaireGrid(questionnaireId);
+        const columns = Array.isArray(layout?.columns) ? [...layout.columns] : [];
+        columns.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+        const payload = await listSubmissionTableRows(submissionId);
+        const rowsIn = Array.isArray(payload?.rows) ? payload.rows : [];
+
+        if (mounted && aliveRef.current) {
+          setGrid({ ...layout, columns });
           setRows(rowsIn);
         }
       } catch (e: any) {
-        if (mounted) setError(e?.message || "Error cargando datos");
+        if (mounted && aliveRef.current) {
+          setError(typeof e?.message === "string" ? e.message : "Error cargando datos");
+        }
       } finally {
-        if (mounted) setLoading(false);
+        if (mounted && aliveRef.current) {
+          setLoading(false);
+        }
       }
     })();
     return () => {
       mounted = false;
     };
-  }, [apiBase, questionnaireId, submissionId, token]);
+  }, [questionnaireId, submissionId]);
 
   const nextRowIndex = useMemo(() => {
     const indexes = rows.map((r) => r.row_index);
@@ -149,59 +144,71 @@ export default function TableForm({
   const [editRows, setEditRows] = useState<Record<number, LocalRow>>({});
 
   // inicializa edición de una fila (desde DTO o vacía)
-  const startEdit = (row?: RowDTO) => {
-    const row_index = row?.row_index ?? nextRowIndex;
-    const cells: Record<string, LocalCell> = {};
-    (grid?.columns ?? []).forEach((col) => {
-      const val = row?.values?.[col.question_id];
-      if (semanticIsActor(col.semantic_tag)) {
-        cells[col.question_id] = {
-          actor: val?.actor_id
-            ? { id: val.actor_id, nombre: "" } // label lazy (se rellenará tras búsqueda si hace falta)
-            : null,
-        };
-      } else {
-        cells[col.question_id] = { text: val?.answer_text ?? "" };
-      }
-    });
-    setEditRows((prev) => ({
-      ...prev,
-      [row_index]: { row_index, cells, _isNew: !row },
-    }));
-  };
+  const startEdit = useCallback(
+    (row?: RowDTO) => {
+      if (!grid) return;
+      const row_index = row?.row_index ?? nextRowIndex;
+      const cells: Record<string, LocalCell> = {};
+      grid.columns.forEach((col) => {
+        const val = row?.values?.[col.question_id];
+        if (semanticIsActor(col.semantic_tag)) {
+          const actorId = val?.actor_id ?? null;
+          const actorName =
+            typeof val?.actor_name === "string" && val.actor_name.trim()
+              ? val.actor_name
+              : actorId || "";
+          cells[col.question_id] = {
+            actor: actorId ? { id: actorId, nombre: actorName || actorId } : null,
+          };
+        } else {
+          cells[col.question_id] = { text: val?.answer_text ?? "" };
+        }
+      });
+      setEditRows((prev) => ({
+        ...prev,
+        [row_index]: { row_index, cells, _isNew: !row },
+      }));
+    },
+    [grid, nextRowIndex]
+  );
 
-  const cancelEdit = (row_index: number) => {
+  const cancelEdit = useCallback((row_index: number) => {
     setEditRows((p) => {
       const n = { ...p };
       delete n[row_index];
       return n;
     });
-  };
+  }, []);
 
-  const addEmptyRow = () => startEdit(undefined);
+  const addEmptyRow = useCallback(() => startEdit(undefined), [startEdit]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handler = () => addEmptyRow();
+    window.addEventListener("phase0:addRow", handler);
+    return () => {
+      window.removeEventListener("phase0:addRow", handler);
+    };
+  }, [addEmptyRow]);
 
   // --- búsquedas de actores ---
-  const defaultActorSearch = async (
-    tipo: "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR",
-    q: string
-  ) => {
-    // Ajusta este endpoint si tu catálogo público difiere
-    // AdminActorViewSet en tu backend acepta ?search=&tipo=
-    const res = await fetch(
-      `${apiBase}/admin/actores/?tipo=${encodeURIComponent(
-        tipo
-      )}&search=${encodeURIComponent(q)}`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    const items = Array.isArray(data?.results) ? data.results : data;
-    return (items ?? []).map((a: any) => ({
-      id: a.id,
-      nombre: a.nombre,
-      documento: a.documento,
-    }));
-  };
+  const defaultActorSearch = useCallback(
+    async (tipo: "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR", q: string) => {
+      const term = q.trim();
+      if (!term) return [];
+      try {
+        const results = await fetchCatalogActors({ tipo, search: term, limit: 20 });
+        return results.map((actor: ActorLite) => ({
+          id: actor.id,
+          nombre: actor.nombre,
+          documento: actor.documento ?? undefined,
+        }));
+      } catch (err) {
+        return [];
+      }
+    },
+    []
+  );
 
   const actorFetcher = actorSearch ?? defaultActorSearch;
 
@@ -212,45 +219,33 @@ export default function TableForm({
     setSavingRow(row_index);
     setError(null);
     try {
-      // Construir FormData con cells[]
-      const fd = new FormData();
-      const cells = grid.columns.map((col, i) => {
-        fd.append(`cells[${i}][question_id]`, col.question_id);
+      const cells: TableRowCellsPayload[] = grid.columns.map((col) => {
         const cell = lr.cells[col.question_id] ?? {};
         if (semanticIsActor(col.semantic_tag)) {
           const tag = (col.semantic_tag || "").toLowerCase();
-          // actor_id requerido
           const actorId = cell.actor?.id ?? "";
           if (!actorId) throw new Error(`Falta seleccionar ${tag} en la fila ${row_index}`);
-          fd.append(`cells[${i}][actor_id]`, actorId);
-        } else {
-          fd.append(`cells[${i}][answer_text]`, (cell.text ?? "").trim());
+          return { question_id: col.question_id, actor_id: actorId };
         }
-        return true;
+        return {
+          question_id: col.question_id,
+          answer_text: (cell.text ?? "").trim(),
+        };
       });
 
-      const isNew = !!lr._isNew;
-      const url = isNew
-        ? `${apiBase}/submissions/${submissionId}/table-rows`
-        : `${apiBase}/submissions/${submissionId}/table-rows/${row_index}`;
-      const method = isNew ? "POST" : "PUT";
+      const basePayload = {
+        submissionId: submissionId,
+        rowIndex: lr.row_index,
+        cells,
+      };
 
-      const res = await fetch(url, {
-        method,
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
-      });
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(`Error ${res.status}: ${txt}`);
+      if (lr._isNew) {
+        await createTableRow(basePayload);
+      } else {
+        await updateTableRow({ ...basePayload, rowIndex: row_index });
       }
-      // refrescar filas
-      const resR = await fetch(
-        `${apiBase}/submissions/${submissionId}/table-rows`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      const payload = await resR.json();
-      setRows(payload?.rows ?? []);
+
+      await refreshRows();
       cancelEdit(row_index);
     } catch (e: any) {
       setError(e?.message || "Error al guardar fila");
@@ -262,13 +257,8 @@ export default function TableForm({
   const deleteRow = async (row_index: number) => {
     if (!confirm(`¿Eliminar fila ${row_index}?`)) return;
     try {
-      const res = await fetch(
-        `${apiBase}/submissions/${submissionId}/table-rows/${row_index}`,
-        { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (!res.ok && res.status !== 204) throw new Error(`Error ${res.status}`);
-      // Quitar localmente
-      setRows((rs) => rs.filter((r) => r.row_index !== row_index));
+      await deleteTableRow(submissionId, row_index);
+      await refreshRows();
       cancelEdit(row_index);
     } catch (e: any) {
       setError(e?.message || "No se pudo eliminar la fila");
@@ -359,8 +349,6 @@ export default function TableForm({
                                 },
                               }))
                             }
-                            token={token}
-                            apiBase={apiBase}
                             actorFetcher={actorFetcher}
                           />
                         </td>
@@ -370,14 +358,29 @@ export default function TableForm({
                     const val = r.values[cellKey];
                     return (
                       <td key={cellKey} className="border-t p-2 text-sm">
-                        {semanticIsActor(c.semantic_tag)
-                          ? val?.actor_id
-                            ? <span className="inline-flex items-center gap-2">
-                                <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                                <code className="text-xs">{val.actor_id}</code>
+                        {semanticIsActor(c.semantic_tag) ? (
+                          val?.actor_id ? (
+                            <div className="flex flex-col gap-1">
+                              <span className="text-sm font-medium text-slate-700">
+                                {val.actor_name ?? "Actor seleccionado"}
                               </span>
-                            : <span className="text-slate-400">—</span>
-                          : (val?.answer_text ?? <span className="text-slate-400">—</span>)}
+                              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                                {val.actor_document && (
+                                  <span className="rounded bg-slate-100 px-1.5 py-0.5">
+                                    {val.actor_document}
+                                  </span>
+                                )}
+                                <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px]">
+                                  {val.actor_id}
+                                </code>
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )
+                        ) : (
+                          val?.answer_text ?? <span className="text-slate-400">—</span>
+                        )}
                       </td>
                     );
                   })}
@@ -443,8 +446,6 @@ export default function TableForm({
                               },
                             }))
                           }
-                          token={token}
-                          apiBase={apiBase}
                           actorFetcher={actorFetcher}
                         />
                       </td>
@@ -482,15 +483,11 @@ function CellEditor({
   column,
   value,
   onChange,
-  token,
-  apiBase,
   actorFetcher,
 }: {
   column: Column;
   value?: { text?: string; actor?: { id: string; nombre: string } | null };
   onChange: (v: { text?: string; actor?: { id: string; nombre: string } | null }) => void;
-  token: string;
-  apiBase: string;
   actorFetcher: (
     tipo: "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR",
     q: string
@@ -567,6 +564,12 @@ function ActorAutocomplete({
     };
   }, [dq, tipo, actorFetcher]);
 
+  useEffect(() => {
+    if (value) {
+      setQ(value.nombre);
+    }
+  }, [value?.id, value?.nombre]);
+
   return (
     <div className="relative">
       <input
@@ -574,7 +577,7 @@ function ActorAutocomplete({
         type="text"
         value={value?.nombre ?? q}
         onChange={(e) => {
-          onChange(value ? null : null); // limpiar selección si escribe
+          onChange(null); // limpiar selección si escribe
           setQ(e.target.value);
           setOpen(true);
         }}

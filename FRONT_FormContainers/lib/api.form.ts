@@ -199,6 +199,168 @@ export function secureMediaUrl(filePath: string) {
   return buildUrl(`secure-media/${safePath}/`);
 }
 
+/* =========================
+ * Formularios tabulares
+ * ========================= */
+
+export type GridColumn = {
+  question_id: string;
+  header: string;
+  column: string;
+  order: number;
+  width?: number | null;
+  semantic_tag?: string | null;
+  ui_hint?: string | null;
+};
+
+export type GridDefinition = {
+  questionnaire_id: string;
+  title: string;
+  version: string;
+  timezone: string;
+  columns: GridColumn[];
+};
+
+export type TableRowValue = {
+  answer_text?: string | null;
+  answer_choice_id?: string | null;
+  answer_file_path?: string | null;
+  actor_id?: string | null;
+  actor_name?: string | null;
+  actor_document?: string | null;
+};
+
+export type TableRowRecord = {
+  submission_id: string;
+  row_index: number;
+  values: Record<string, TableRowValue>;
+};
+
+export type TableRowCellsPayload = {
+  question_id: string;
+  answer_text?: string | null;
+  answer_choice_id?: string | null;
+  actor_id?: string | null;
+  file?: File | Blob | null;
+};
+
+type TableRowFormPayload = {
+  submissionId: string;
+  rowIndex?: number | null;
+  cells: TableRowCellsPayload[];
+};
+
+export type ActorLite = {
+  id: string;
+  nombre: string;
+  documento?: string | null;
+};
+
+function buildTableRowFormData(payload: TableRowFormPayload): FormData {
+  const fd = new FormData();
+  if (payload.rowIndex) {
+    fd.set("row_index", String(payload.rowIndex));
+  }
+
+  payload.cells.forEach((cell, index) => {
+    fd.set(`cells[${index}][question_id]`, cell.question_id);
+
+    if (cell.actor_id) {
+      fd.set(`cells[${index}][actor_id]`, cell.actor_id);
+    }
+
+    if (cell.answer_text !== undefined && cell.answer_text !== null) {
+      fd.set(`cells[${index}][answer_text]`, cell.answer_text);
+    }
+
+    if (cell.answer_choice_id) {
+      fd.set(`cells[${index}][answer_choice_id]`, cell.answer_choice_id);
+    }
+
+    if (cell.file) {
+      fd.set(`cells[${index}][file]`, cell.file);
+    }
+  });
+
+  return fd;
+}
+
+export function getQuestionnaireGrid(questionnaireId: string): Promise<GridDefinition> {
+  return fetchApi(`cuestionarios/${questionnaireId}/grid/`);
+}
+
+export function listSubmissionTableRows(submissionId: string): Promise<{ submission_id: string; rows: TableRowRecord[] }> {
+  return fetchApi(`submissions/${submissionId}/table-rows/`);
+}
+
+export function createTableRow(payload: TableRowFormPayload): Promise<TableRowRecord> {
+  const fd = buildTableRowFormData(payload);
+  return fetchApi(`submissions/${payload.submissionId}/table-rows/`, {
+    method: "POST",
+    body: fd,
+  });
+}
+
+export function updateTableRow(payload: TableRowFormPayload & { rowIndex: number }): Promise<TableRowRecord> {
+  const fd = buildTableRowFormData(payload);
+  return fetchApi(`submissions/${payload.submissionId}/table-rows/${payload.rowIndex}/`, {
+    method: "PUT",
+    body: fd,
+  });
+}
+
+export function deleteTableRow(submissionId: string, rowIndex: number): Promise<null> {
+  return fetchApi(`submissions/${submissionId}/table-rows/${rowIndex}/`, {
+    method: "DELETE",
+  });
+}
+
+export async function fetchCatalogActors(params: {
+  tipo: "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR";
+  search?: string;
+  limit?: number;
+  signal?: AbortSignal;
+}): Promise<ActorLite[]> {
+  const qs = new URLSearchParams();
+  qs.set("tipo", params.tipo);
+  if (params.search && params.search.trim()) {
+    qs.set("search", params.search.trim());
+  }
+  if (params.limit) {
+    qs.set("limit", String(params.limit));
+  }
+
+  const endpoint = qs.toString() ? `catalogos/actores/?${qs.toString()}` : "catalogos/actores/";
+  const data = await fetchApi<any>(endpoint, { signal: params.signal });
+  const rawList = Array.isArray(data) ? data : data?.results ?? [];
+
+  return rawList
+    .map((actor: any) => {
+      const id = actor?.id ?? actor?.uuid ?? actor?.pk ?? actor?.ID;
+      if (!id) return null;
+      const nombre =
+        actor?.nombre ??
+        actor?.razon_social ??
+        actor?.razonSocial ??
+        actor?.name ??
+        actor?.display_name ??
+        "";
+      const documento =
+        actor?.documento ??
+        actor?.nit ??
+        actor?.identificacion ??
+        actor?.document ??
+        actor?.numero_documento ??
+        null;
+      return {
+        id: String(id),
+        nombre: String(nombre || ""),
+        documento: documento ? String(documento) : null,
+      } as ActorLite;
+    })
+    .filter((item: ActorLite | null): item is ActorLite => Boolean(item?.id));
+}
+
 // --- Catálogos: Actores (FORM) ---
 export type FormActorTipo = "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR";
 
@@ -210,19 +372,12 @@ export async function searchCatalogActors(opts: {
 }) {
   const { tipo, search, limit = 15, signal } = opts;
 
-  // Enviamos ambos params por compatibilidad (search y q)
-  const params = new URLSearchParams({
-    tipo,
-    search,              // ← si la vista usa SearchFilter
-    q: search,           // ← si la vista lee 'q'
-    limit: String(limit),
-  });
-
-  // OJO: este endpoint es el del módulo Form, NO el de admin.
-  return fetchApi(`catalogos/actores/?${params.toString()}`, {
-    method: "GET",
-    signal,
-  }) as Promise<Array<{ id: string; nombre: string; nit?: string | null }>>;
+  const list = await fetchCatalogActors({ tipo, search, limit, signal });
+  return list.map((actor) => ({
+    id: actor.id,
+    nombre: actor.nombre,
+    nit: actor.documento ?? null,
+  }));
 }
 
 // Alias opcional para evitar confusiones en devtools

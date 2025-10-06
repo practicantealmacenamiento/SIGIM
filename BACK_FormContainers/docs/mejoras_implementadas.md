@@ -55,15 +55,15 @@ class PrecintoDetector:
 #### 2. **Servicio de Verificación Mejorado**
 ```python
 # Archivo: app/application/verification_enhanced.py
-class EnhancedVerificationService:
-    - Modo debug para usuarios staff
-    - Información detallada de detección
-    - Compatibilidad con sistema existente
+class EnhancedVerificationService(VerificationService):
+    - Modo debug opcional
+    - Expone `detalles` con candidatos y confianza
+    - Compatibilidad con el flujo existente
 ```
 
 #### 3. **Integración Transparente**
-- La función `limpiar_precinto()` original ahora usa el detector mejorado
-- Fallback automático a implementación original si hay problemas
+- `limpiar_precinto_mejorado()` utiliza el nuevo detector y mantiene fallback
+- `EnhancedVerificationService` puede habilitarse desde `ServiceFactory`
 - Sin cambios breaking en la API existente
 
 ### Características del Nuevo Sistema:
@@ -90,7 +90,7 @@ class EnhancedVerificationService:
 
 ### Nuevos Archivos:
 1. `app/domain/precinto_rules.py` - Detector mejorado de precintos
-2. `app/application/verification_enhanced.py` - Servicio de verificación mejorado
+2. `app/application/verification_enhanced.py` - Servicio de verificación mejorado con modo debug
 3. `app/tests/test_precinto_detection.py` - Tests completos del sistema
 4. `app/management/commands/test_precinto_rules.py` - Comando para testing
 5. `docs/arquitectura_hexagonal_analisis.md` - Análisis de arquitectura

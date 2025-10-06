@@ -338,8 +338,6 @@ function FormularioContent(props: {
             <TableForm
               questionnaireId={qid!}
               submissionId={submissionId}
-              token=""
-              apiBase="/api/v1"
             />
           </section>
 
