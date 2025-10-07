@@ -1,5 +1,6 @@
 "use client";
 
+import { genUUID } from "@/lib/uuid";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -133,7 +134,7 @@ function FormulariosPanel() {
   useEffect(() => { load(); }, []);
 
   function newQuestionnaire() {
-    const id = crypto.randomUUID();
+    const id = genUUID();
     const q: AdminQuestionnaire = { id, title: "Nuevo cuestionario", version: "v1", timezone: "America/Bogota", questions: [] };
     sessionStorage.setItem(`draft:${id}`, JSON.stringify(q));
     router.push(`/admin/${id}`);

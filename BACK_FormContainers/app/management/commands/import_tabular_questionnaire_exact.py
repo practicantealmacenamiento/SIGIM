@@ -1,19 +1,22 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 import os, re, json, zipfile, xml.etree.ElementTree as ET
-from typing import Dict, List, Tuple, Optional
-from uuid import uuid4
+from typing import Dict, List, Tuple, Optional, Union
+from uuid import uuid4, UUID
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
-from django.core.files.base import ContentFile
-from django.core.files.storage import default_storage
 
 from app.infrastructure.models import Questionnaire, Question
+from app.infrastructure.storage import load_questionnaire_layout, save_questionnaire_layout
 
 _NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _NS_REL  = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _NS_PKG  = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+# =======================
+# Utilidades XLSX (sin libs externas)
+# =======================
 
 def _excel_col_to_index(col: str) -> int:
     n = 0
@@ -57,6 +60,7 @@ def _read_sheet(z: zipfile.ZipFile, sheet_path: str):
 
 def _col_widths(root) -> Dict[int, float]:
     widths = {}
+    # <cols><col min="1" max="1" width="13.57" customWidth="1"/></cols>
     for c in root.findall(f".//{{{_NS_MAIN}}}col"):
         w = float(c.attrib.get("width", "0") or 0)
         if not w:
@@ -66,7 +70,7 @@ def _col_widths(root) -> Dict[int, float]:
             widths[idx] = w
     return widths
 
-def _first_rows(root, shared, max_rows=5) -> List[Dict[str, str]]:
+def _read_rows(root, shared) -> List[Dict[str, str]]:
     rows = []
     for row in root.findall(f".//{{{_NS_MAIN}}}row"):
         cells = {}
@@ -86,12 +90,14 @@ def _first_rows(root, shared, max_rows=5) -> List[Dict[str, str]]:
             cells[ref] = (val or "").strip()
         if cells:
             rows.append(cells)
-            if len(rows) >= max_rows:
-                break
     return rows
 
-def _guess_semantic_tag(header: str) -> Optional[str]:
-    h = header.lower()
+# =======================
+# Heurísticas
+# =======================
+
+def _guess_semantic_tag(header: str) -> str:
+    h = (header or "").lower()
     if "proveedor" in h: return "proveedor"
     if "transport" in h or "tranportador" in h: return "transportista"
     if "receptor" in h: return "receptor"
@@ -100,39 +106,55 @@ def _guess_semantic_tag(header: str) -> Optional[str]:
     if "precinto" in h or "sello" in h or "seal" in h: return "precinto"
     if "cédula" in h or "cedula" in h: return "documento"
     if "telefono" in h or "teléfono" in h: return "telefono"
+    if "foto" in h or "imagen" in h or "evidencia" in h: return "none"  # lo tratamos como file
     return "none"
 
 def _guess_ui_hint(header: str) -> str:
-    h = header.lower()
+    h = (header or "").lower()
     if "hora" in h: return "time"
     if "fecha" in h: return "date"
     if "telefono" in h or "teléfono" in h: return "phone"
     return "text"
 
 def _guess_type_and_file_mode(header: str) -> Tuple[str, Optional[str]]:
-    # Dominio actual soporta "text" | "choice" | "file"
-    h = header.lower()
+    h = (header or "").lower()
     if "foto" in h or "imagen" in h or "evidencia" in h:
         return "file", "image_ocr"
     return "text", None
 
-def _layout_path_for(qid) -> str:
-    return f"questionnaire_layouts/{qid}.json"
+# =======================
+# Comando
+# =======================
 
 class Command(BaseCommand):
-    help = "Crea/actualiza un Questionnaire tabular a partir de un XLSX y guarda un layout JSON (anchos, headers)."
+    help = (
+        "Crea/actualiza un Questionnaire desde un XLSX SOLO con las cabeceras y "
+        "genera/actualiza su layout en formato 'grids' (full|section) para el frontend tipo tabla."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument("path", type=str, help="Ruta del archivo .xlsx")
         parser.add_argument("--title", type=str, help="Título del cuestionario (por defecto, nombre del archivo)")
         parser.add_argument("--qversion", "--q-version", dest="qversion", type=str, default="1.0",
-                    help="Versión del Questionnaire (evita conflicto con --version global de Django)")
+                            help="Versión del Questionnaire (evita conflicto con --version global de Django)")
         parser.add_argument("--timezone", type=str, default="America/Bogota")
         parser.add_argument("--sheet", type=str, help="Nombre de hoja a usar (por defecto, primera hoja)")
+        parser.add_argument("--header-row", type=int, default=2, help="Fila donde están los encabezados (def: 2)")
         parser.add_argument("--truncate-questions", action="store_true",
-            help="Borra preguntas existentes del cuestionario antes de insertar")
+                            help="Borra preguntas existentes del cuestionario antes de insertar")
         parser.add_argument("--schema", type=str,
-            help="Ruta a JSON con overrides por columna (type, required, semantic_tag, file_mode, ui_hint).")
+                            help="Ruta a JSON con overrides por columna (type, required, semantic_tag, file_mode, ui_hint).")
+
+        # NUEVO: definición de la/las grillas
+        parser.add_argument("--grid-id", type=str, default="fase0",
+                            help="ID lógico de la grilla (def: 'fase0')")
+        parser.add_argument("--grid-title", type=str, help="Título visible de la grilla (def: título del cuestionario)")
+        parser.add_argument("--grid-mode", choices=["full","section"], default="full",
+                            help="Si la grilla representa todo el formulario (full) o solo una sección (section).")
+        parser.add_argument("--insert-after-order", type=int, default=None,
+                            help="Solo para mode=section: insertarla después de la pregunta con ese 'order'.")
+        parser.add_argument("--merge-grids", type=str, default="true",
+                            help="Si existe layout previo, hace upsert de esta grilla sin borrar las otras (true/false).")
 
     def handle(self, *args, **opts):
         path = opts["path"]
@@ -158,63 +180,92 @@ class Command(BaseCommand):
 
         root = _read_sheet(z, sheet_path)
         widths_map = _col_widths(root)
-        rows = _first_rows(root, shared, max_rows=10)
+        all_rows = _read_rows(root, shared)
+        header_row_idx = int(opts.get("header_row") or 2)
 
-        if len(rows) < 2:
-            raise CommandError("No se encontró una fila de cabecera clara (se espera encabezados en la fila 2).")
+        if len(all_rows) < header_row_idx:
+            raise CommandError(f"No se encontró la fila de cabecera {header_row_idx}. "
+                               f"El archivo trae solo {len(all_rows)} filas con contenido interpretable.")
 
-        headers_row = rows[1]   # en tu archivo, los encabezados están en la fila 2
+        headers_row = all_rows[header_row_idx - 1]  # filas 1-indexadas para el usuario
         cols_letters = sorted({ _col_letters(ref) for ref in headers_row.keys() },
                               key=lambda s: [ord(ch) for ch in s])
 
-        # carga overrides de schema opcional
+        # overrides (opcional)
         overrides = {}
         schema_file = opts.get("schema")
         if schema_file:
             with open(schema_file, "r", encoding="utf-8") as f:
                 raw = json.load(f) or {}
             overrides = (raw.get("columns") or {})
+        def _apply_overrides(hdr: str, t, fm, tag, hint):
+            ov = overrides.get(hdr) or overrides.get(hdr.strip())
+            if not ov:
+                return t, fm, tag, hint, bool(False)
+            return (
+                ov.get("type", t),
+                ov.get("file_mode", fm),
+                ov.get("semantic_tag", tag),
+                ov.get("ui_hint", hint),
+                bool(ov.get("required", False)),
+            )
 
         title = (opts.get("title") or os.path.splitext(os.path.basename(path))[0]).strip()
         version = str(opts.get("qversion") or "1.0").strip()
         timezone = str(opts.get("timezone") or "America/Bogota").strip()
 
-        self.stdout.write(self.style.NOTICE(f"Hoja: {sheet}. Columnas detectadas: {len(cols_letters)}"))
+        grid_id = str(opts.get("grid_id") or "fase0").strip()
+        grid_title = (opts.get("grid_title") or title).strip()
+        grid_mode = str(opts.get("grid_mode") or "full").strip()
+        insert_after_order = opts.get("insert_after_order")
+        merge_grids = str(opts.get("merge_grids") or "true").lower() in ("1", "true", "yes", "y")
 
-        layout_columns = []
+        self.stdout.write(self.style.NOTICE(
+            f"Hoja: {sheet}. Cabecera en fila {header_row_idx}. Columnas detectadas: {len(cols_letters)}"
+        ))
+
+        # =======================
+        # Crear/actualizar Questionnaire y Questions
+        # =======================
+        layout_columns: List[dict] = []
         with transaction.atomic():
             qn, created = Questionnaire.objects.get_or_create(
                 title=title, defaults={"version": version, "timezone": timezone}
             )
             if not created:
-                upd = {}
-                if qn.version != version: upd["version"] = version
-                if qn.timezone != timezone: upd["timezone"] = timezone
-                if upd: 
-                    for k,v in upd.items(): setattr(qn, k, v)
-                    qn.save(update_fields=list(upd.keys()))
+                updates = {}
+                if qn.version != version: updates["version"] = version
+                if qn.timezone != timezone: updates["timezone"] = timezone
+                if updates:
+                    for k,v in updates.items(): setattr(qn, k, v)
+                    qn.save(update_fields=list(updates.keys()))
 
             if opts.get("truncate_questions", False):
                 qn.questions.all().delete()
 
+            # Evitar duplicados si hay encabezados repetidos
+            seen_names: Dict[str, int] = {}
             order = 1
             for col in cols_letters:
-                ref = f"{col}2"
-                header = headers_row.get(ref, "").strip()
+                ref = f"{col}{header_row_idx}"
+                header = (headers_row.get(ref) or "").strip()
                 if not header:
                     continue
+
+                # desambiguar cabeceras repetidas
+                base_header = header
+                if base_header in seen_names:
+                    seen_names[base_header] += 1
+                    header = f"{base_header} ({seen_names[base_header]})"
+                else:
+                    seen_names[base_header] = 1
 
                 inferred_type, inferred_file_mode = _guess_type_and_file_mode(header)
                 inferred_tag = _guess_semantic_tag(header)
                 ui_hint = _guess_ui_hint(header)
-                required = False
-                override = overrides.get(header) or overrides.get(header.strip())
-                if override:
-                    inferred_type = override.get("type", inferred_type)
-                    inferred_file_mode = override.get("file_mode", inferred_file_mode)
-                    inferred_tag = override.get("semantic_tag", inferred_tag)
-                    ui_hint = override.get("ui_hint", ui_hint)
-                    required = bool(override.get("required", False))
+                inferred_type, inferred_file_mode, inferred_tag, ui_hint, required = _apply_overrides(
+                    base_header, inferred_type, inferred_file_mode, inferred_tag, ui_hint
+                )
 
                 # crear/actualizar question
                 q = qn.questions.filter(text=header).first()
@@ -238,7 +289,6 @@ class Command(BaseCommand):
                         file_mode=inferred_file_mode or "",
                     )
 
-                # layout visual
                 width = widths_map.get(_excel_col_to_index(col))
                 layout_columns.append({
                     "question_id": str(q.id),
@@ -251,21 +301,40 @@ class Command(BaseCommand):
                 })
                 order += 1
 
-            # guardar layout JSON en storage
-            layout = {
+            # =======================
+            # Generar / actualizar LAYOUT en formato "grids"
+            # =======================
+            layout = load_questionnaire_layout(qn.id) or {
                 "questionnaire_id": str(qn.id),
                 "title": qn.title,
                 "version": qn.version,
                 "timezone": qn.timezone,
+            }
+            grids_by_id: Dict[str, dict] = {g["id"]: g for g in (layout.get("grids") or [])}
+
+            new_grid = {
+                "id": grid_id,
+                "title": grid_title,
+                "mode": grid_mode,  # "full" | "section"
+                "insert_after_order": insert_after_order if grid_mode == "section" else None,
                 "columns": layout_columns,
             }
-            path = _layout_path_for(qn.id)
-            content = ContentFile(json.dumps(layout, ensure_ascii=False, indent=2).encode("utf-8"))
-            if default_storage.exists(path):
-                default_storage.delete(path)
-            default_storage.save(path, content)
+
+            if merge_grids:
+                grids_by_id[grid_id] = new_grid
+                layout["grids"] = list(grids_by_id.values())
+            else:
+                layout["grids"] = [new_grid]
+
+            # Compatibilidad hacia atrás: si es "full", también rellenamos "columns"
+            if grid_mode == "full":
+                layout["columns"] = layout_columns
+
+            # Persistir en storage
+            save_questionnaire_layout(qn.id, layout)
 
         self.stdout.write(self.style.SUCCESS(
-            f"Cuestionario {'creado' if created else 'actualizado'}: '{qn.title}'. "
-            f"Layout guardado en storage: {path}. Columnas: {len(layout_columns)}."
+            f"Cuestionario {'creado' if created else 'actualizado'}: '{qn.title}'.\n"
+            f"  - Preguntas: {qn.questions.count()} (nuevas: {len(layout_columns)})\n"
+            f"  - Layout guardado con grid id='{grid_id}' (mode='{grid_mode}')."
         ))

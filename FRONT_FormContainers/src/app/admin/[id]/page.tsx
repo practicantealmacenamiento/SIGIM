@@ -1,4 +1,5 @@
 "use client";
+import { genUUID } from "@/lib/uuid";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -26,6 +27,15 @@ const UI = {
   railBtnDanger: "inline-flex h-8 w-8 items-center justify-center rounded-full border border-rose-200/60 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition",
 };
 
+const onAddChoice = (qIndex: number) => {
+  setForm((prev) => {
+    const next = structuredClone(prev);
+    const q = next.questions[qIndex];
+    const newChoice = { id: genUUID(), text: "", branch_to: null };
+    q.choices = Array.isArray(q.choices) ? [...q.choices, newChoice] : [newChoice];
+    return next;
+  });
+};
 /* ====== Iconos (paths estables) ====== */
 function Icon({ d }: { d: string }) {
   return (
@@ -120,7 +130,7 @@ export default function AdminEditorPage() {
   function addQuestion() {
     if (!qn) return;
     const q: AdminQuestion = {
-      id: crypto.randomUUID(),
+      id: genUUID(),
       text: "Nueva pregunta",
       type: "text",
       required: false,
@@ -139,10 +149,10 @@ export default function AdminEditorPage() {
     const src = qn.questions.find((q) => q.id === qid); if (!src) return;
     const clone: AdminQuestion = {
       ...src,
-      id: crypto.randomUUID(),
+      id: genUUID(),
       text: src.text + " (copia)",
       order: qn.questions.length + 1,
-      choices: src.choices ? src.choices.map((c) => ({ ...c, id: crypto.randomUUID() })) : null,
+      choices: src.choices ? src.choices.map((c) => ({ ...c, id: genUUID() })) : null,
     };
     const next = [...qn.questions, clone].map((q, i) => ({ ...q, order: i + 1 }));
     setQn({ ...qn, questions: next });
@@ -177,7 +187,7 @@ export default function AdminEditorPage() {
       questions: qn.questions.map((q) => {
         if (q.id !== qid) return q;
         const list = q.choices ? [...q.choices] : [];
-        list.push({ id: crypto.randomUUID(), text: "Opción", branch_to: null });
+        list.push({ id: genUUID(), text: "Opción", branch_to: null });
         return { ...q, choices: list };
       }),
     });
@@ -212,7 +222,7 @@ export default function AdminEditorPage() {
       questions: qn.questions.map((q) => {
         if (q.id !== qid) return q;
         const base = q.choices ? [...q.choices] : [];
-        const added = lines.map((t) => ({ id: crypto.randomUUID(), text: t, branch_to: null }));
+        const added = lines.map((t) => ({ id: genUUID(), text: t, branch_to: null }));
         return { ...q, choices: [...base, ...added] };
       }),
     });
@@ -531,3 +541,7 @@ export default function AdminEditorPage() {
     </main>
   );
 }
+function setForm(arg0: (prev: any) => any) {
+  throw new Error("Function not implemented.");
+}
+

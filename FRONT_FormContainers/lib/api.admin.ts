@@ -1,5 +1,4 @@
 /* lib/api.admin.ts — Cliente Admin (login unificado, rutas /api/v1) */
-
 export type ActorTipo = "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR";
 
 export type AdminChoice = {
@@ -224,6 +223,39 @@ export async function adminLogin(username: string, password: string) {
 }
 
 /* ===================== Formularios ===================== */
+export async function createQuestionnaire(input: {
+  title: string;
+  version?: string;
+  timezone?: string;
+  questions?: Array<{
+    text: string;
+    type?: string;
+    required?: boolean;
+    order?: number;
+    file_mode?: string;
+    semantic_tag?: string | null;
+    choices?: Array<{ text: string; branch_to?: string | null }>;
+  }>;
+}) {
+  const body = {
+    title: input.title,
+    version: input.version ?? "v1",
+    timezone: input.timezone ?? "America/Bogota",
+    ...(Array.isArray(input.questions) ? { questions: input.questions } : {}),
+  };
+  const created = await apiFetch(`${ADMIN_MGMT_PREFIX}/questionnaires/`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  return created; // incluye id
+}
+
+export async function updateQuestionnaire(id: string, payload: any) {
+  return apiFetch(`${ADMIN_MGMT_PREFIX}/questionnaires/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
 // Normaliza una pregunta a nuestro shape usado en el editor
 function normalizeQuestion(raw: any, idx: number): AdminQuestion {
   const id = String(raw?.id ?? raw?.uuid ?? raw?.pk ?? `${idx + 1}`);

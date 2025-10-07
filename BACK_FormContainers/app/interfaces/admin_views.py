@@ -227,6 +227,19 @@ class AdminUserViewSet(viewsets.ViewSet):
         obj.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+def _validate_question_type(t: Optional[str]) -> str:
+    from app.infrastructure.models import Question as QModel
+    allowed = {k for (k, _) in QModel.TYPE_CHOICES}
+    t = (t or "text").strip()
+    return t if t in allowed else "text"
+
+def _normalize_semantic(s) -> str:
+    from app.infrastructure.models import Question as QModel
+    if s is None: return "none"
+    s = (str(s) or "").strip().lower()
+    if s in ("", "none"): return "none"
+    allowed = {k for (k, _) in QModel.SEMANTIC_CHOICES}
+    return s if s in allowed else "none"
 
 # =========================================================
 # ADMIN — CUESTIONARIOS
@@ -300,6 +313,243 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
         if not qn:
             return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
         return Response(QuestionnaireModelSerializer(qn).data)
+    
+    # ------------------------
+    # CREATE (POST)
+    # ------------------------
+    @extend_schema(
+        tags=["admin/questionnaires"],
+        summary="Crear cuestionario (admin)",
+        request=serializers.DictField,
+        responses={201: QuestionnaireModelSerializer, 400: OpenApiResponse(description="Error de validación")},
+    )
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        payload = request.data or {}
+        title = (payload.get("title") or "").strip()
+        version = (payload.get("version") or "v1").strip()
+        timezone = (payload.get("timezone") or "America/Bogota").strip()
+
+        if not title:
+            return Response({"title": "El título es obligatorio."}, status=400)
+
+        qn = Questionnaire.objects.create(title=title, version=version or "v1", timezone=timezone or "America/Bogota")
+
+        # Si vienen preguntas, crearlas
+        if isinstance(payload.get("questions"), list):
+            branch_links: list[tuple[Choice, Optional[str]]] = []
+            for idx, qd in enumerate(payload["questions"]):
+                text = (qd.get("text") or "").strip()
+                if not text:
+                    transaction.set_rollback(True)
+                    return Response({"questions": f"La pregunta #{idx+1} requiere 'text'."}, status=400)
+                qtype = _validate_question_type(qd.get("type"))
+                required = bool(qd.get("required", False))
+                order = int(qd.get("order") or idx)
+                semantic_tag = _normalize_semantic(qd.get("semantic_tag"))
+                file_mode = (qd.get("file_mode") or "image_only").strip()
+
+                qobj = Question.objects.create(
+                    questionnaire=qn,
+                    text=text,
+                    type=qtype,
+                    required=required,
+                    order=order,
+                    file_mode=file_mode,
+                    semantic_tag=semantic_tag,
+                )
+
+                # choices si vienen
+                if isinstance(qd.get("choices"), list):
+                    for cd in qd["choices"]:
+                        ctext = (cd.get("text") or "").strip()
+                        if not ctext:
+                            transaction.set_rollback(True)
+                            return Response({"choices": "Cada opción nueva debe tener 'text'."}, status=400)
+                        branch_to = (cd.get("branch_to") or "").strip() or None
+                        cobj = Choice.objects.create(question=qobj, text=ctext, branch_to=None)
+                        branch_links.append((cobj, branch_to))
+
+            # resolver branch_to luego de crear todas
+            questions_index = {str(q.id): q for q in Questionnaire.objects.get(pk=qn.id).questions.all()}
+            for cobj, target in branch_links:
+                if target and target in questions_index:
+                    cobj.branch_to = questions_index[target]
+                    cobj.save()
+
+        # responder
+        fresh = (
+            Questionnaire.objects.filter(pk=qn.id)
+            .prefetch_related(
+                Prefetch(
+                    "questions",
+                    queryset=Question.objects.order_by("order").prefetch_related(
+                        Prefetch("choices", queryset=Choice.objects.select_related("branch_to").order_by("text"))
+                    ),
+                )
+            ).first()
+        )
+        return Response(QuestionnaireModelSerializer(fresh).data, status=201)
+
+    # ------------------------
+    # UPDATE / PATCH (parciales)
+    # ------------------------
+    @extend_schema(tags=["admin/questionnaires"], summary="Actualizar (PUT parcial)", request=serializers.DictField,
+                   responses={200: QuestionnaireModelSerializer, 400: OpenApiResponse(description="Error de validación")})
+    def update(self, request, pk=None, *args, **kwargs):
+        return self._upsert(pk=pk, payload=request.data, is_partial=True)
+
+    @extend_schema(tags=["admin/questionnaires"], summary="Actualizar (PATCH)", request=serializers.DictField,
+                   responses={200: QuestionnaireModelSerializer, 400: OpenApiResponse(description="Error de validación")})
+    def partial_update(self, request, pk=None, *args, **kwargs):
+        return self._upsert(pk=pk, payload=request.data, is_partial=True)
+
+    @extend_schema(tags=["admin/questionnaires"], summary="Eliminar", responses={204: OpenApiResponse(description="OK")})
+    def destroy(self, request, pk=None):
+        try:
+            obj = Questionnaire.objects.get(pk=pk)
+        except Questionnaire.DoesNotExist:
+            return Response({"detail": "No encontrado."}, status=404)
+        obj.delete()
+        return Response(status=204)
+
+    @transaction.atomic
+    def _upsert(self, *, pk: str, payload: dict, is_partial: bool) -> Response:
+        qn = (
+            Questionnaire.objects.filter(pk=pk)
+            .prefetch_related(Prefetch("questions", queryset=Question.objects.prefetch_related("choices").order_by("order")))
+            .first()
+        )
+        if not qn:
+            return Response({"detail": "No encontrado."}, status=404)
+
+        # metadatos (sólo si vienen)
+        if "title" in payload:
+            title = (payload.get("title") or "").strip()
+            if not title:
+                return Response({"title": "El título no puede estar vacío."}, status=400)
+            qn.title = title
+        if "version" in payload:
+            version = (payload.get("version") or "").strip()
+            if not version:
+                return Response({"version": "La versión no puede estar vacía."}, status=400)
+            qn.version = version
+        if "timezone" in payload:
+            tz = (payload.get("timezone") or "").strip()
+            if not tz:
+                return Response({"timezone": "La zona horaria no puede estar vacía."}, status=400)
+            qn.timezone = tz
+        qn.save()
+
+        # preguntas (sólo si llegan y son lista)
+        if "questions" in payload and isinstance(payload.get("questions"), list):
+            existing_qs = {str(q.id): q for q in qn.questions.all()}
+            seen_qids: set[str] = set()
+            branch_links: list[tuple[Choice, Optional[str]]] = []
+
+            for qd in payload["questions"]:
+                qid = (qd.get("id") or "").strip() or None
+                text_present = "text" in qd
+                raw_text = qd.get("text")
+                text = (raw_text if raw_text is not None else "").strip()
+                type_present = "type" in qd
+                qtype = _validate_question_type(qd.get("type") if type_present else None)
+                req_present = "required" in qd
+                required = bool(qd.get("required")) if req_present else None
+                order = None
+                if "order" in qd:
+                    try: order = int(qd.get("order"))
+                    except: order = None
+                sem_present = "semantic_tag" in qd
+                semantic_tag = _normalize_semantic(qd.get("semantic_tag") if sem_present else None)
+                fm_present = "file_mode" in qd
+                file_mode = (qd.get("file_mode") or "").strip() if fm_present else None
+
+                if qid and qid in existing_qs:
+                    qobj = existing_qs[qid]
+                    if text_present and raw_text is not None:
+                        if not (is_partial and text == ""):
+                            if text == "":
+                                return Response({"questions": "Cada pregunta debe tener texto."}, status=400)
+                            qobj.text = text
+                    if type_present: qobj.type = qtype
+                    if req_present:  qobj.required = bool(required)
+                    if order is not None: qobj.order = order
+                    if sem_present: qobj.semantic_tag = semantic_tag
+                    if fm_present:  qobj.file_mode = file_mode or "image_only"
+                    qobj.save()
+                else:
+                    if text == "":
+                        return Response({"questions": "Cada pregunta nueva debe tener 'text'."}, status=400)
+                    qobj = Question.objects.create(
+                        questionnaire=qn,
+                        text=text,
+                        type=qtype,
+                        required=bool(required) if req_present else False,
+                        order=order if order is not None else 0,
+                        file_mode=(file_mode or "image_only"),
+                        semantic_tag=(semantic_tag or "none"),
+                    )
+                    qid = str(qobj.id)
+                seen_qids.add(qid)
+
+                # choices si vienen y son lista
+                if "choices" in qd and isinstance(qd.get("choices"), list):
+                    existing_cs = {str(c.id): c for c in qobj.choices.all()}
+                    seen_cids: set[str] = set()
+                    for cd in qd["choices"]:
+                        cid = (cd.get("id") or "").strip() or None
+                        ctext_present = "text" in cd
+                        raw_ctext = cd.get("text")
+                        ctext = (raw_ctext if raw_ctext is not None else "").strip()
+                        branch_to = (cd.get("branch_to") or "").strip() or None
+
+                        if cid and cid in existing_cs:
+                            cobj = existing_cs[cid]
+                            if ctext_present and raw_ctext is not None:
+                                if not (is_partial and ctext == ""):
+                                    if ctext == "":
+                                        return Response({"choices": "Cada opción debe tener texto."}, status=400)
+                                    cobj.text = ctext
+                            cobj.branch_to = None
+                            cobj.save()
+                        else:
+                            if ctext == "":
+                                return Response({"choices": "Cada opción nueva debe tener 'text'."}, status=400)
+                            cobj = Choice.objects.create(question=qobj, text=ctext, branch_to=None)
+                            cid = str(cobj.id)
+                        seen_cids.add(cid)
+                        branch_links.append((cobj, branch_to))
+
+                    # borrar las no vistas (sólo si mandaste lista)
+                    for cid, cobj in list(existing_cs.items()):
+                        if cid not in seen_cids:
+                            cobj.delete()
+
+            # borrar preguntas no vistas (sólo si mandaste lista)
+            for qid, qobj in list(existing_qs.items()):
+                if qid not in seen_qids:
+                    qobj.delete()
+
+            # resolver branch_to
+            questions_index = {str(q.id): q for q in Questionnaire.objects.get(pk=qn.id).questions.all()}
+            for cobj, target in branch_links:
+                if target and target in questions_index:
+                    cobj.branch_to = questions_index[target]
+                    cobj.save()
+
+        fresh = (
+            Questionnaire.objects.filter(pk=qn.id)
+            .prefetch_related(
+                Prefetch(
+                    "questions",
+                    queryset=Question.objects.order_by("order").prefetch_related(
+                        Prefetch("choices", queryset=Choice.objects.select_related("branch_to").order_by("text"))
+                    ),
+                )
+            ).first()
+        )
+        return Response(QuestionnaireModelSerializer(fresh).data, status=200)
 
     # ------------------------
     # PUT/PATCH (parciales)

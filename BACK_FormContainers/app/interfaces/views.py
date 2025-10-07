@@ -427,17 +427,16 @@ class SubmissionViewSet(mixins.ListModelMixin,
     )
     @action(detail=True, methods=["post"], url_path="table-rows")
     def add_table_row(self, request, pk=None):
-        ser = AddTableRowInputSerializer(
-            data={**request.data, "submission_id": pk},
-            context={"request": request}
-        )
+        ser = AddTableRowInputSerializer(data={**request.data, "submission_id": pk}, context={"request": request})
         ser.is_valid(raise_exception=True)
+        table_id = ser.validated_data.get("table_id") or request.query_params.get("table_id")
         svc = get_service_factory().create_tabular_form_service()
-        result = svc.add_row(AddTableRowCommand(
+        result = svc.add_row(
+            AddTableRowCommand(
             submission_id=ser.validated_data["submission_id"],
             row_index=ser.validated_data.get("row_index"),
             cells=[TableCellInput(**c) for c in ser.validated_data["cells"]],
-        ))
+        ), table_id=table_id)
         return Response(TableRowOutputSerializer(result).data)
 
     @extend_schema(
@@ -449,17 +448,17 @@ class SubmissionViewSet(mixins.ListModelMixin,
     )
     @action(detail=True, methods=["put","patch"], url_path=r"table-rows/(?P<row_index>\d+)")
     def update_table_row(self, request, pk=None, row_index=None):
-        ser = UpdateTableRowInputSerializer(
-            data={**request.data, "submission_id": pk, "row_index": row_index},
-            context={"request": request}
-        )
+        ser = UpdateTableRowInputSerializer(data={**request.data, "submission_id": pk, "row_index": row_index},
+                                            context={"request": request})
         ser.is_valid(raise_exception=True)
+        table_id = ser.validated_data.get("table_id") or request.query_params.get("table_id")
         svc = get_service_factory().create_tabular_form_service()
-        result = svc.update_row(UpdateTableRowCommand(
+        result = svc.update_row(
+            UpdateTableRowCommand(
             submission_id=ser.validated_data["submission_id"],
             row_index=int(ser.validated_data["row_index"]),
             cells=[TableCellInput(**c) for c in ser.validated_data["cells"]],
-        ))
+        ), table_id=table_id)
         return Response(TableRowOutputSerializer(result).data)
 
     @extend_schema(
@@ -470,11 +469,12 @@ class SubmissionViewSet(mixins.ListModelMixin,
     )
     @action(detail=True, methods=["delete"], url_path=r"table-rows/(?P<row_index>\d+)")
     def delete_table_row(self, request, pk=None, row_index=None):
+        table_id = request.query_params.get("table_id") or (request.data.get("table_id") if hasattr(request, "data") else None)
         svc = get_service_factory().create_tabular_form_service()
         svc.delete_row(DeleteTableRowCommand(
             submission_id=UUID(str(pk)),
             row_index=int(row_index)
-        ))
+        ), table_id=table_id)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(
@@ -487,13 +487,10 @@ class SubmissionViewSet(mixins.ListModelMixin,
     )
     @action(detail=True, methods=["get"], url_path="table-rows")
     def list_table_rows(self, request, pk=None):
-        # GET /api/v1/submissions/<id>/table-rows/
+        table_id = request.query_params.get("table_id")
         svc = get_service_factory().create_tabular_form_service()
-        rows = svc.list_rows(UUID(str(pk)))
-        return Response({
-            "submission_id": str(pk),
-            "rows": TableRowOutputSerializer(rows, many=True).data
-        })
+        rows = svc.list_rows(UUID(str(pk)), table_id=table_id)
+        return Response({"submission_id": str(pk), "table_id": table_id, "rows": TableRowOutputSerializer(rows, many=True).data})
 
     @extend_schema(
         request=SubmissionCreateSerializer,
@@ -825,3 +822,21 @@ class QuestionnaireGridDefinitionAPIView(APIView):
             return Response(GridDefinitionSerializer(layout).data)
         except Exception as e:
             return Response({"error": str(e)}, status=500)
+
+class QuestionnaireGridsDefinitionAPIView(APIView):
+    authentication_classes = [BearerOrTokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(tags=["Cuestionarios"], responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT})
+    def get(self, request, qid: str):
+        layout = load_questionnaire_layout(qid)
+        if not layout:
+            return Response({"error": "No hay layout para este cuestionario."}, status=404)
+        grids = layout.get("grids")
+        if grids:
+            return Response({"questionnaire_id": str(qid), "grids": grids})
+        # fallback: si no hay "grids" pero sí "columns", lo tratamos como single-grid "full"
+        cols = layout.get("columns") or []
+        if cols:
+            return Response({"questionnaire_id": str(qid), "grids": [{"id": "default","title": layout.get("title") or "Grid","mode":"full","columns": cols}]})
+        return Response({"grids": []})

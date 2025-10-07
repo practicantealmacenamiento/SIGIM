@@ -1172,6 +1172,7 @@ class TableCellInputSerializer(serializers.Serializer):
 class AddTableRowInputSerializer(serializers.Serializer):
     submission_id = serializers.UUIDField()
     row_index = serializers.IntegerField(required=False, min_value=1)
+    table_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)  # <— NUEVO
     cells = TableCellInputSerializer(many=True)
 
     def validate(self, attrs):
@@ -1199,7 +1200,6 @@ class AddTableRowInputSerializer(serializers.Serializer):
         return attrs
 
 class UpdateTableRowInputSerializer(AddTableRowInputSerializer):
-    # igual, pero row_index requerido
     row_index = serializers.IntegerField(required=True, min_value=1)
 
 class TableRowOutputSerializer(serializers.Serializer):

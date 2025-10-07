@@ -1,18 +1,15 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * TableForm
- * - Pinta un grid idéntico al Excel usando el layout del backend.
- * - Permite agregar/editar/eliminar filas contra los endpoints tabulares.
+ * Modo tabla para una Submission.
+ * - Lee el layout del cuestionario (columnas)
+ * - Lista/crea/actualiza/elimina filas
+ * - Emite/escucha eventos para añadir filas desde fuera ("phase0:addRow")
  *
- * Props mínimas:
- *  - questionnaireId: UUID del cuestionario (Fase 0)
- *  - submissionId: UUID de la submission activa
- *  - token: JWT/Bearer
- *
- * Opcionales:
- *  - apiBase: string (default "/api/v1")
- *  - actorSearch?: (tipo: "PROVEEDOR"|"TRANSPORTISTA"|"RECEPTOR", q: string) => Promise<Array<{id:string;nombre:string;documento?:string}>>
+ * IMPORTANTE:
+ * - Todos los endpoints incluyen "/" final para evitar 301 y pérdidas de cabecera.
+ * - apiBase DEBE ser el mismo usado en el wrapper de API (ej. "/api").
  */
 
 type Column = {
@@ -20,591 +17,402 @@ type Column = {
   header: string;
   width?: number | null;
   order: number;
-  semantic_tag?: string | null; // "proveedor" | "transportista" | "receptor" | "placa" | ...
-  ui_hint?: string | null;      // "text" | "date" | "time" | "phone" | ...
+  semantic_tag?: string | null; // proveedor | transportista | receptor | placa | precinto | contenedor | ...
+  ui_hint?: string | null;      // text | date | time | number | phone | file | ...
 };
 
 type GridDef = {
   questionnaire_id: string;
-  title: string;
-  version: string;
-  timezone: string;
+  title?: string;
+  version?: string;
+  timezone?: string;
   columns: Column[];
 };
 
-type RowDTO = {
-  submission_id: string;
+type Row = {
   row_index: number;
-  values: Record<
-    string, // question_id
-    {
-      answer_text?: string | null;
-      answer_choice_id?: string | null;
-      answer_file_path?: string | null;
-      actor_id?: string | null;
-    }
-  >;
-};
-
-// Helpers
-
-const excelWidthToPx = (w?: number | null) => {
-  if (!w) return undefined;
-  // 1 unidad "Excel column width" ~ 7.0~8.0 px dependiendo de fuente; usamos 8 como aproximación.
-  return Math.round(w * 8);
-};
-
-const semanticIsActor = (tag?: string | null) =>
-  !!tag && ["proveedor", "transportista", "receptor"].includes(tag.toLowerCase());
-
-// Sencillo debounce hook para búsquedas
-const useDebounced = (value: string, delay = 250) => {
-  const [v, setV] = useState(value);
-  useEffect(() => {
-    const t = setTimeout(() => setV(value), delay);
-    return () => clearTimeout(t);
-  }, [value, delay]);
-  return v;
+  values: Record<string, any>; // key = question_id -> normalizado por backend
 };
 
 type Props = {
   questionnaireId: string;
   submissionId: string;
-  token: string;
-  apiBase?: string;
-  actorSearch?: (
-    tipo: "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR",
-    q: string
-  ) => Promise<Array<{ id: string; nombre: string; documento?: string }>>;
+  token: string | null;
+  apiBase?: string; // "/api"
 };
 
-export default function TableForm({
-  questionnaireId,
-  submissionId,
-  token,
-  apiBase = "/api/v1",
-  actorSearch,
-}: Props) {
+function ensureSlash(url: string) {
+  return url.endsWith("/") ? url : url + "/";
+}
+
+function joinUrl(base: string, path: string) {
+  const b = base.endsWith("/") ? base.slice(0, -1) : base;
+  const p = path.startsWith("/") ? path : "/" + path;
+  // limpiamos dobles
+  const full = (b + p).replace(/\/{2,}/g, "/");
+  return ensureSlash(full);
+}
+
+const DEFAULT_COL_WIDTH = 200;
+
+const TableForm: React.FC<Props> = ({ questionnaireId, submissionId, token, apiBase = "/api" }) => {
   const [grid, setGrid] = useState<GridDef | null>(null);
-  const [rows, setRows] = useState<RowDTO[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [savingRow, setSavingRow] = useState<number | null>(null);
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // --- carga layout y filas ---
+  const authHeaders = useMemo<HeadersInit>(() => {
+    const h: any = { "Accept": "application/json" };
+    if (token) h["Authorization"] = `Bearer ${token}`;
+    return h;
+  }, [token]);
+
+  const authJsonHeaders = useMemo<HeadersInit>(() => {
+    const h: any = { "Accept": "application/json", "Content-Type": "application/json" };
+    if (token) h["Authorization"] = `Bearer ${token}`;
+    return h;
+  }, [token]);
+
+  const columns = grid?.columns ?? [];
+
+  const colById = useMemo(() => {
+    const m = new Map<string, Column>();
+    columns.forEach(c => m.set(String(c.question_id), c));
+    return m;
+  }, [columns]);
+
+  // Carga layout (robusta: intenta /grids y luego /grid)
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      setLoading(true);
-      setError(null);
+    let cancel = false;
+    async function loadLayout() {
       try {
-        // layout
-        const resL = await fetch(
-          `${apiBase}/cuestionarios/${questionnaireId}/grid/`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        if (!resL.ok) throw new Error(`Grid ${resL.status}`);
-        const layout: GridDef = await resL.json();
-        // ordenar columnas por order (defensivo)
-        layout.columns.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-        // filas existentes
-        const resR = await fetch(
-          `${apiBase}/submissions/${submissionId}/table-rows`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        if (!resR.ok) throw new Error(`Rows ${resR.status}`);
-        const payload = await resR.json();
-        const rowsIn: RowDTO[] = payload?.rows ?? [];
-        if (mounted) {
-          setGrid(layout);
-          setRows(rowsIn);
+        setError(null);
+        const url1 = joinUrl(apiBase, `cuestionarios/${questionnaireId}/grids`);
+        let resp = await fetch(url1, { headers: authHeaders, credentials: "include", cache: "no-store", redirect: "follow" });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (!cancel) {
+            const gs = Array.isArray(data?.grids) ? data.grids : [];
+            const g0 = gs.find((g: any) => Array.isArray(g?.columns) && g.columns.length > 0)
+                     || (Array.isArray(data?.columns) ? { columns: data.columns } : null)
+                     || data?.grid;
+            if (g0 && Array.isArray(g0.columns)) {
+              setGrid({
+                questionnaire_id: String(data?.questionnaire_id || questionnaireId),
+                title: data?.title || g0?.title || "Grid",
+                version: data?.version,
+                timezone: data?.timezone,
+                columns: g0.columns.map((c: any, idx: number) => ({
+                  question_id: String(c.question_id || c.id),
+                  header: String(c.header || c.title || c.name || `Col ${idx+1}`),
+                  order: Number(c.order ?? idx),
+                  width: c.width ?? null,
+                  semantic_tag: c.semantic_tag ?? null,
+                  ui_hint: c.ui_hint ?? (c.type === "file" ? "file" : "text"),
+                })),
+              });
+              return;
+            }
+          }
+        }
+        // fallback /grid
+        const url2 = joinUrl(apiBase, `cuestionarios/${questionnaireId}/grid`);
+        resp = await fetch(url2, { headers: authHeaders, credentials: "include", cache: "no-store", redirect: "follow" });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (!cancel && Array.isArray(data?.columns)) {
+            setGrid({
+              questionnaire_id: String(data?.questionnaire_id || questionnaireId),
+              title: data?.title || "Grid",
+              version: data?.version,
+              timezone: data?.timezone,
+              columns: data.columns.map((c: any, idx: number) => ({
+                question_id: String(c.question_id || c.id),
+                header: String(c.header || c.title || c.name || `Col ${idx+1}`),
+                order: Number(c.order ?? idx),
+                width: c.width ?? null,
+                semantic_tag: c.semantic_tag ?? null,
+                ui_hint: c.ui_hint ?? (c.type === "file" ? "file" : "text"),
+              })),
+            });
+          }
+        } else if (!cancel) {
+          setError(`No se pudo cargar layout (${resp.status}).`);
         }
       } catch (e: any) {
-        if (mounted) setError(e?.message || "Error cargando datos");
-      } finally {
-        if (mounted) setLoading(false);
+        if (!cancel) setError(e?.message || "Error cargando layout.");
       }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, [apiBase, questionnaireId, submissionId, token]);
+    }
+    loadLayout();
+    return () => { cancel = true; };
+  }, [apiBase, questionnaireId, authHeaders]);
 
-  const nextRowIndex = useMemo(() => {
-    const indexes = rows.map((r) => r.row_index);
-    return indexes.length ? Math.max(...indexes) + 1 : 1;
-  }, [rows]);
-
-  // --- edición local (UI state) ---
-  type LocalCell = {
-    text?: string;
-    actor?: { id: string; nombre: string } | null;
-  };
-  type LocalRow = {
-    row_index: number;
-    cells: Record<string, LocalCell>; // key = question_id
-    _isNew?: boolean;
-  };
-
-  const [editRows, setEditRows] = useState<Record<number, LocalRow>>({});
-
-  // inicializa edición de una fila (desde DTO o vacía)
-  const startEdit = (row?: RowDTO) => {
-    const row_index = row?.row_index ?? nextRowIndex;
-    const cells: Record<string, LocalCell> = {};
-    (grid?.columns ?? []).forEach((col) => {
-      const val = row?.values?.[col.question_id];
-      if (semanticIsActor(col.semantic_tag)) {
-        cells[col.question_id] = {
-          actor: val?.actor_id
-            ? { id: val.actor_id, nombre: "" } // label lazy (se rellenará tras búsqueda si hace falta)
-            : null,
-        };
-      } else {
-        cells[col.question_id] = { text: val?.answer_text ?? "" };
-      }
-    });
-    setEditRows((prev) => ({
-      ...prev,
-      [row_index]: { row_index, cells, _isNew: !row },
-    }));
-  };
-
-  const cancelEdit = (row_index: number) => {
-    setEditRows((p) => {
-      const n = { ...p };
-      delete n[row_index];
-      return n;
-    });
-  };
-
-  const addEmptyRow = () => startEdit(undefined);
-
-  // --- búsquedas de actores ---
-  const defaultActorSearch = async (
-    tipo: "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR",
-    q: string
-  ) => {
-    // Ajusta este endpoint si tu catálogo público difiere
-    // AdminActorViewSet en tu backend acepta ?search=&tipo=
-    const res = await fetch(
-      `${apiBase}/admin/actores/?tipo=${encodeURIComponent(
-        tipo
-      )}&search=${encodeURIComponent(q)}`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    const items = Array.isArray(data?.results) ? data.results : data;
-    return (items ?? []).map((a: any) => ({
-      id: a.id,
-      nombre: a.nombre,
-      documento: a.documento,
-    }));
-  };
-
-  const actorFetcher = actorSearch ?? defaultActorSearch;
-
-  // --- guardar fila ---
-  const saveRow = async (row_index: number) => {
-    const lr = editRows[row_index];
-    if (!grid || !lr) return;
-    setSavingRow(row_index);
-    setError(null);
-    try {
-      // Construir FormData con cells[]
-      const fd = new FormData();
-      const cells = grid.columns.map((col, i) => {
-        fd.append(`cells[${i}][question_id]`, col.question_id);
-        const cell = lr.cells[col.question_id] ?? {};
-        if (semanticIsActor(col.semantic_tag)) {
-          const tag = (col.semantic_tag || "").toLowerCase();
-          // actor_id requerido
-          const actorId = cell.actor?.id ?? "";
-          if (!actorId) throw new Error(`Falta seleccionar ${tag} en la fila ${row_index}`);
-          fd.append(`cells[${i}][actor_id]`, actorId);
-        } else {
-          fd.append(`cells[${i}][answer_text]`, (cell.text ?? "").trim());
+  // Carga filas
+  useEffect(() => {
+    let cancel = false;
+    async function loadRows() {
+      try {
+        setLoading(true);
+        const url = joinUrl(apiBase, `submissions/${submissionId}/table-rows`) + `?as_table=1`;
+        const resp = await fetch(url, { headers: authHeaders, credentials: "include", cache: "no-store", redirect: "follow" });
+        if (!resp.ok) throw new Error(`No se pudo cargar filas (${resp.status}).`);
+        const data = await resp.json();
+        if (!cancel) {
+          const rs: Row[] = Array.isArray(data?.rows) ? data.rows.map((r: any) => ({
+            row_index: Number(r.row_index),
+            values: r.values || {},
+          })) : [];
+          // ordenar por row_index asc
+          rs.sort((a, b) => a.row_index - b.row_index);
+          setRows(rs);
         }
-        return true;
-      });
-
-      const isNew = !!lr._isNew;
-      const url = isNew
-        ? `${apiBase}/submissions/${submissionId}/table-rows`
-        : `${apiBase}/submissions/${submissionId}/table-rows/${row_index}`;
-      const method = isNew ? "POST" : "PUT";
-
-      const res = await fetch(url, {
-        method,
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
-      });
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(`Error ${res.status}: ${txt}`);
+      } catch (e: any) {
+        if (!cancel) setError(e?.message || "Error cargando filas.");
+      } finally {
+        if (!cancel) setLoading(false);
       }
-      // refrescar filas
-      const resR = await fetch(
-        `${apiBase}/submissions/${submissionId}/table-rows`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      const payload = await resR.json();
-      setRows(payload?.rows ?? []);
-      cancelEdit(row_index);
-    } catch (e: any) {
-      setError(e?.message || "Error al guardar fila");
-    } finally {
-      setSavingRow(null);
     }
-  };
+    if (submissionId) loadRows();
+    return () => { cancel = true; };
+  }, [apiBase, submissionId, authHeaders]);
 
-  const deleteRow = async (row_index: number) => {
-    if (!confirm(`¿Eliminar fila ${row_index}?`)) return;
+  // Listener para "Nueva fila" desde index.tsx
+  useEffect(() => {
+    const handler = () => addRow();
+    window.addEventListener("phase0:addRow", handler as any);
+    return () => { window.removeEventListener("phase0:addRow", handler as any); };
+  }, []); // eslint-disable-line
+
+  const addRow = useCallback(async () => {
     try {
-      const res = await fetch(
-        `${apiBase}/submissions/${submissionId}/table-rows/${row_index}`,
-        { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (!res.ok && res.status !== 204) throw new Error(`Error ${res.status}`);
-      // Quitar localmente
-      setRows((rs) => rs.filter((r) => r.row_index !== row_index));
-      cancelEdit(row_index);
+      setSaving(true);
+      const url = joinUrl(apiBase, `submissions/${submissionId}/table-rows`);
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: authJsonHeaders,
+        credentials: "include",
+        body: JSON.stringify({ cells: [] }),
+      });
+      if (!resp.ok) throw new Error(`No se pudo crear la fila (${resp.status}).`);
+      const data = await resp.json();
+      const newRow: Row = {
+        row_index: Number(data?.row_index),
+        values: data?.values || {},
+      };
+      setRows(prev => {
+        const copy = [...prev, newRow];
+        copy.sort((a, b) => a.row_index - b.row_index);
+        return copy;
+      });
     } catch (e: any) {
-      setError(e?.message || "No se pudo eliminar la fila");
+      setError(e?.message || "Error creando fila.");
+    } finally {
+      setSaving(false);
     }
+  }, [apiBase, submissionId, authJsonHeaders]);
+
+  const deleteRow = useCallback(async (row_index: number) => {
+    if (!confirm(`¿Eliminar la fila ${row_index}?`)) return;
+    try {
+      setSaving(true);
+      const url = joinUrl(apiBase, `submissions/${submissionId}/table-rows/${row_index}`);
+      const resp = await fetch(url, { method: "DELETE", headers: authHeaders, credentials: "include" });
+      if (!resp.ok && resp.status !== 204) throw new Error(`No se pudo eliminar la fila (${resp.status}).`);
+      setRows(prev => prev.filter(r => r.row_index !== row_index));
+    } catch (e: any) {
+      setError(e?.message || "Error eliminando fila.");
+    } finally {
+      setSaving(false);
+    }
+  }, [apiBase, submissionId, authHeaders]);
+
+  // Helpers para obtener/mostrar el valor de una celda
+  const getCellValueDisplay = (r: Row, qid: string): string => {
+    const v = r.values?.[qid];
+    if (v == null) return "";
+    if (typeof v === "string" || typeof v === "number") return String(v);
+    // objetos: preferir 'text' o 'display' o 'value'
+    return v.text ?? v.display ?? v.value ?? v.answer_text ?? v.actor_name ?? "";
   };
 
-  // --- render ---
+  const setLocalCell = (row_index: number, qid: string, value: any) => {
+    setRows(prev => prev.map(r => {
+      if (r.row_index !== row_index) return r;
+      return { ...r, values: { ...r.values, [qid]: value } };
+    }));
+  };
+
+  // PATCH celda (texto / choice)
+  const patchCell = useCallback(async (row_index: number, qid: string, value: string) => {
+    try {
+      setSaving(true);
+      const url = joinUrl(apiBase, `submissions/${submissionId}/table-rows/${row_index}`);
+      const payload = { cells: [{ question_id: qid, answer_text: value }] };
+      const resp = await fetch(url, {
+        method: "PATCH",
+        headers: authJsonHeaders,
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error(`No se pudo guardar (${resp.status}).`);
+      const data = await resp.json();
+      // servidor devuelve fila normalizada
+      const values = data?.values || {};
+      setRows(prev => prev.map(r => (r.row_index === row_index ? { ...r, values } : r)));
+    } catch (e: any) {
+      setError(e?.message || "Error guardando celda.");
+    } finally {
+      setSaving(false);
+    }
+  }, [apiBase, submissionId, authJsonHeaders]);
+
+  // PATCH archivo
+  const uploadCellFile = useCallback(async (row_index: number, qid: string, file: File) => {
+    try {
+      setSaving(true);
+      const url = joinUrl(apiBase, `submissions/${submissionId}/table-rows/${row_index}`);
+      const fd = new FormData();
+      fd.append("cells[0][question_id]", qid);
+      fd.append("cells[0][file]", file);
+      const headers: HeadersInit = { ...authHeaders };
+      // NO pongas Content-Type: el browser arma el boundary
+      const resp = await fetch(url, { method: "PATCH", headers, credentials: "include", body: fd });
+      if (!resp.ok) throw new Error(`No se pudo subir el archivo (${resp.status}).`);
+      const data = await resp.json();
+      const values = data?.values || {};
+      setRows(prev => prev.map(r => (r.row_index === row_index ? { ...r, values } : r)));
+    } catch (e: any) {
+      setError(e?.message || "Error subiendo archivo.");
+    } finally {
+      setSaving(false);
+    }
+  }, [apiBase, submissionId, authHeaders]);
+
+  // Debounce para inputs
+  const typingTimers = useRef<Record<string, any>>({}); // key `${row_index}:${qid}`
+
+  const handleChange = (row_index: number, qid: string, val: string) => {
+    setLocalCell(row_index, qid, { text: val });
+    const key = `${row_index}:${qid}`;
+    if (typingTimers.current[key]) {
+      clearTimeout(typingTimers.current[key]);
+    }
+    typingTimers.current[key] = setTimeout(() => {
+      patchCell(row_index, qid, val);
+      delete typingTimers.current[key];
+    }, 500);
+  };
+
+  const handleFile = (row_index: number, qid: string, file?: File | null) => {
+    if (!file) return;
+    uploadCellFile(row_index, qid, file);
+  };
+
+  // Render
   if (loading) {
     return (
-      <div className="p-4 text-sm text-slate-600">Cargando formulario…</div>
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-6 text-slate-500">
+        Cargando tabla...
+      </div>
     );
   }
   if (error) {
     return (
-      <div className="p-4 text-sm text-red-600">
-        Error: <span className="font-mono">{error}</span>
+      <div className="rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-400/10 p-4 text-amber-800 dark:text-amber-100">
+        {error}
       </div>
     );
   }
-  if (!grid) return null;
+  if (!grid || columns.length === 0) {
+    return (
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-6 text-slate-500">
+        No hay definición de columnas para este cuestionario.
+      </div>
+    );
+  }
 
   return (
-    <div className="w-full">
-      <div className="mb-3 flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold">{grid.title}</h2>
-          <p className="text-xs text-slate-500">
-            Versión {grid.version} · Zona horaria {grid.timezone}
-          </p>
-        </div>
-        <button
-          onClick={addEmptyRow}
-          className="px-3 py-2 rounded-md bg-indigo-600 text-white text-sm hover:bg-indigo-700 shadow"
-        >
-          + Añadir fila
-        </button>
-      </div>
-
-      <div className="overflow-auto rounded-lg border border-slate-200 shadow-sm">
-        <table className="min-w-full border-collapse">
-          <thead className="bg-slate-50">
-            <tr>
-              <th className="sticky left-0 z-10 bg-slate-50 border-b border-r p-2 text-left text-xs text-slate-500">
-                #
+    <div className="w-full overflow-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+      <table className="min-w-full border-collapse">
+        <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800">
+          <tr>
+            <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 w-20">
+              Fila
+            </th>
+            {columns.sort((a,b)=>a.order-b.order).map((col) => (
+              <th
+                key={col.question_id}
+                style={{ width: (col.width ?? DEFAULT_COL_WIDTH) + "px" }}
+                className="px-3 py-2 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700"
+                title={col.header}
+              >
+                {col.header}
               </th>
-              {grid.columns.map((c) => (
-                <th
-                  key={c.question_id}
-                  className="border-b p-2 text-left text-xs text-slate-500"
-                  style={{ width: excelWidthToPx(c.width) }}
-                  title={c.header}
-                >
-                  {c.header}
-                </th>
-              ))}
-              <th className="border-b p-2 text-left text-xs text-slate-500">
-                Acciones
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {/* filas existentes */}
-            {rows.map((r) => {
-              const isEditing = !!editRows[r.row_index];
-              return (
-                <tr key={`row-${r.row_index}`} className="even:bg-slate-50/40">
-                  <td className="sticky left-0 z-10 bg-white border-t border-r p-2 text-xs text-slate-700">
-                    {r.row_index}
-                  </td>
-                  {grid.columns.map((c) => {
-                    const cellKey = c.question_id;
-                    if (isEditing) {
-                      const lr = editRows[r.row_index]!;
-                      return (
-                        <td key={cellKey} className="border-t p-0">
-                          <CellEditor
-                            column={c}
-                            value={lr.cells[cellKey]}
-                            onChange={(nv) =>
-                              setEditRows((prev) => ({
-                                ...prev,
-                                [r.row_index]: {
-                                  ...prev[r.row_index],
-                                  cells: {
-                                    ...prev[r.row_index].cells,
-                                    [cellKey]: nv,
-                                  },
-                                },
-                              }))
-                            }
-                            token={token}
-                            apiBase={apiBase}
-                            actorFetcher={actorFetcher}
-                          />
-                        </td>
-                      );
-                    }
-
-                    const val = r.values[cellKey];
-                    return (
-                      <td key={cellKey} className="border-t p-2 text-sm">
-                        {semanticIsActor(c.semantic_tag)
-                          ? val?.actor_id
-                            ? <span className="inline-flex items-center gap-2">
-                                <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                                <code className="text-xs">{val.actor_id}</code>
-                              </span>
-                            : <span className="text-slate-400">—</span>
-                          : (val?.answer_text ?? <span className="text-slate-400">—</span>)}
-                      </td>
-                    );
-                  })}
-                  <td className="border-t p-2">
-                    {isEditing ? (
-                      <div className="flex gap-2">
-                        <button
-                          disabled={savingRow === r.row_index}
-                          onClick={() => saveRow(r.row_index)}
-                          className="px-2 py-1 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
-                        >
-                          {savingRow === r.row_index ? "Guardando…" : "Guardar"}
-                        </button>
-                        <button
-                          onClick={() => cancelEdit(r.row_index)}
-                          className="px-2 py-1 text-xs rounded bg-slate-200 hover:bg-slate-300"
-                        >
-                          Cancelar
-                        </button>
-                      </div>
+            ))}
+            <th className="px-3 py-2 text-right text-xs font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 w-16">
+              Acciones
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={`r-${r.row_index}`} className="even:bg-slate-50/50 dark:even:bg-slate-800/30">
+              <td className="px-3 py-2 text-sm text-slate-500 dark:text-slate-300 border-b border-slate-100 dark:border-slate-800">
+                {r.row_index}
+              </td>
+              {columns.sort((a,b)=>a.order-b.order).map(col => {
+                const qid = String(col.question_id);
+                const val = getCellValueDisplay(r, qid);
+                const isFile = (col.ui_hint || "").toLowerCase() === "file";
+                return (
+                  <td key={`c-${r.row_index}-${qid}`} className="px-2 py-1 border-b border-slate-100 dark:border-slate-800">
+                    {!isFile ? (
+                      <input
+                        type={(col.ui_hint || "text") === "number" ? "number" : "text"}
+                        value={val}
+                        onChange={(e) => handleChange(r.row_index, qid, e.target.value)}
+                        className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        placeholder={col.header}
+                      />
                     ) : (
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => startEdit(r)}
-                          className="px-2 py-1 text-xs rounded bg-indigo-600 text-white hover:bg-indigo-700"
-                        >
-                          Editar
-                        </button>
-                        <button
-                          onClick={() => deleteRow(r.row_index)}
-                          className="px-2 py-1 text-xs rounded bg-rose-600 text-white hover:bg-rose-700"
-                        >
-                          Eliminar
-                        </button>
-                      </div>
+                      <label className="flex items-center gap-2 text-sm text-indigo-600 hover:underline cursor-pointer">
+                        <input type="file" className="hidden" onChange={(e) => handleFile(r.row_index, qid, e.target.files?.[0])} />
+                        Subir archivo
+                      </label>
                     )}
                   </td>
-                </tr>
-              );
-            })}
+                );
+              })}
+              <td className="px-2 py-1 border-b border-slate-100 dark:border-slate-800 text-right">
+                <button
+                  onClick={() => deleteRow(r.row_index)}
+                  className="rounded-md px-2 py-1 text-xs bg-rose-600 text-white hover:bg-rose-700"
+                  disabled={saving}
+                >
+                  Eliminar
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
 
-            {/* fila nueva en edición */}
-            {Object.values(editRows)
-              .filter((r) => r._isNew)
-              .map((r) => (
-                <tr key={`row-new-${r.row_index}`} className="bg-yellow-50">
-                  <td className="sticky left-0 z-10 bg-yellow-50 border-t border-r p-2 text-xs text-slate-700">
-                    {r.row_index}
-                  </td>
-                  {grid.columns.map((c) => {
-                    const cellKey = c.question_id;
-                    return (
-                      <td key={cellKey} className="border-t p-0">
-                        <CellEditor
-                          column={c}
-                          value={r.cells[cellKey]}
-                          onChange={(nv) =>
-                            setEditRows((prev) => ({
-                              ...prev,
-                              [r.row_index]: {
-                                ...prev[r.row_index],
-                                cells: { ...prev[r.row_index].cells, [cellKey]: nv },
-                              },
-                            }))
-                          }
-                          token={token}
-                          apiBase={apiBase}
-                          actorFetcher={actorFetcher}
-                        />
-                      </td>
-                    );
-                  })}
-                  <td className="border-t p-2">
-                    <div className="flex gap-2">
-                      <button
-                        disabled={savingRow === r.row_index}
-                        onClick={() => saveRow(r.row_index)}
-                        className="px-2 py-1 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
-                      >
-                        {savingRow === r.row_index ? "Guardando…" : "Guardar"}
-                      </button>
-                      <button
-                        onClick={() => cancelEdit(r.row_index)}
-                        className="px-2 py-1 text-xs rounded bg-slate-200 hover:bg-slate-300"
-                      >
-                        Cancelar
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
+      {/* footer */}
+      <div className="flex items-center justify-between p-3">
+        <div className="text-xs text-slate-500 dark:text-slate-400">
+          {rows.length} filas · {columns.length} columnas {saving ? "· guardando..." : ""}
+        </div>
+        <button
+          onClick={() => addRow()}
+          className="rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-3 py-2"
+          disabled={saving}
+        >
+          Nueva fila
+        </button>
       </div>
     </div>
   );
-}
+};
 
-// =================== Celdas editables ===================
-
-function CellEditor({
-  column,
-  value,
-  onChange,
-  token,
-  apiBase,
-  actorFetcher,
-}: {
-  column: Column;
-  value?: { text?: string; actor?: { id: string; nombre: string } | null };
-  onChange: (v: { text?: string; actor?: { id: string; nombre: string } | null }) => void;
-  token: string;
-  apiBase: string;
-  actorFetcher: (
-    tipo: "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR",
-    q: string
-  ) => Promise<Array<{ id: string; nombre: string; documento?: string }>>;
-}) {
-  const tag = (column.semantic_tag || "").toLowerCase();
-  if (semanticIsActor(tag)) {
-    const tipo =
-      tag === "proveedor"
-        ? "PROVEEDOR"
-        : tag === "transportista"
-        ? "TRANSPORTISTA"
-        : "RECEPTOR";
-    return (
-      <ActorAutocomplete
-        tipo={tipo as any}
-        value={value?.actor ?? null}
-        onChange={(actor) => onChange({ ...value, actor })}
-        actorFetcher={actorFetcher}
-      />
-    );
-  }
-
-  // inputs básicos por ui_hint
-  const hint = (column.ui_hint || "text").toLowerCase();
-  const inputType =
-    hint === "date" ? "date" : hint === "time" ? "time" : "text";
-
-  return (
-    <input
-      type={inputType}
-      value={value?.text ?? ""}
-      onChange={(e) => onChange({ ...value, text: e.target.value })}
-      className="w-full px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-indigo-500/50"
-      placeholder={column.header}
-    />
-  );
-}
-
-// =============== Autocomplete simple de actores ===============
-
-function ActorAutocomplete({
-  tipo,
-  value,
-  onChange,
-  actorFetcher,
-}: {
-  tipo: "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR";
-  value: { id: string; nombre: string } | null;
-  onChange: (v: { id: string; nombre: string } | null) => void;
-  actorFetcher: (
-    tipo: "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR",
-    q: string
-  ) => Promise<Array<{ id: string; nombre: string; documento?: string }>>;
-}) {
-  const [q, setQ] = useState("");
-  const dq = useDebounced(q, 200);
-  const [opts, setOpts] = useState<Array<{ id: string; nombre: string; documento?: string }>>([]);
-  const [open, setOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      if (!dq) {
-        setOpts([]);
-        return;
-      }
-      const res = await actorFetcher(tipo, dq);
-      if (mounted) setOpts(res);
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, [dq, tipo, actorFetcher]);
-
-  return (
-    <div className="relative">
-      <input
-        ref={inputRef}
-        type="text"
-        value={value?.nombre ?? q}
-        onChange={(e) => {
-          onChange(value ? null : null); // limpiar selección si escribe
-          setQ(e.target.value);
-          setOpen(true);
-        }}
-        onFocus={() => setOpen(true)}
-        placeholder={`Buscar ${tipo.toLowerCase()}...`}
-        className="w-full px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-indigo-500/50"
-      />
-      {open && opts.length > 0 && (
-        <div className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-md border border-slate-200 bg-white shadow-lg">
-          {opts.map((o) => (
-            <button
-              key={o.id}
-              type="button"
-              onClick={() => {
-                onChange({ id: o.id, nombre: o.nombre });
-                setQ("");
-                setOpts([]);
-                setOpen(false);
-                inputRef.current?.blur();
-              }}
-              className="block w-full cursor-pointer px-3 py-2 text-left text-sm hover:bg-indigo-50"
-            >
-              <div className="font-medium">{o.nombre}</div>
-              {o.documento && (
-                <div className="text-xs text-slate-500">NIT: {o.documento}</div>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+export default TableForm;
