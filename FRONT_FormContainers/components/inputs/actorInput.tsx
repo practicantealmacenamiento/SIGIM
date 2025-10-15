@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { searchCatalogActors } from "../../lib/api.form";
 
 type ActorTipo = "TRANSPORTISTA" | "PROVEEDOR" | "RECEPTOR";
@@ -16,6 +16,10 @@ type Props = {
   onSelect: (actor: ActorItem) => void;
   placeholder?: string;
   className?: string;
+  /** Modo selección múltiple: limpia input, mantiene abierto y refocus tras seleccionar */
+  multiple?: boolean;
+  /** Si true, Enter selecciona el primer resultado cuando hay lista */
+  selectFirstOnEnter?: boolean;
 };
 
 function useDebounced<T>(value: T, delay = 300) {
@@ -34,6 +38,8 @@ export default function ActorInput({
   onSelect,
   placeholder = "Escribe al menos 2 letras…",
   className = "",
+  multiple = false,
+  selectFirstOnEnter = true,
 }: Props) {
   const [query, setQuery] = useState(defaultValue);
   const [open, setOpen] = useState(false);
@@ -45,10 +51,12 @@ export default function ActorInput({
   const debounced = useDebounced(query, 300);
   const canSearch = useMemo(() => debounced.trim().length >= 2, [debounced]);
 
+  // Sincroniza el valor inicial si cambia el prop
   useEffect(() => {
     setQuery(defaultValue || "");
   }, [defaultValue]);
 
+  // Buscar mientras esté abierto y haya 2+ letras
   useEffect(() => {
     if (!open) return;
     if (!canSearch) {
@@ -58,21 +66,12 @@ export default function ActorInput({
     }
 
     const controller = new AbortController();
-    const params = new URLSearchParams({
-      tipo,                  // ← el back espera 'tipo' exactamente así
-      search: debounced,     // ← y el filtro es 'search', NO 'q' ni 'term'
-      limit: "15",
-    });
-
-    setLoading(true);
-    setError(null);
-
     setLoading(true);
     setError(null);
 
     searchCatalogActors({
-      tipo,                   // "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR"
-      search: debounced,      // texto que teclea el usuario (debounced)
+      tipo,
+      search: debounced,
       limit: 15,
       signal: controller.signal,
     })
@@ -85,10 +84,25 @@ export default function ActorInput({
     return () => controller.abort();
   }, [open, canSearch, debounced, tipo]);
 
-  const handlePick = (actor: ActorItem) => {
-    setOpen(false);
-    setQuery(actor.nombre);
+  const handlePick = useCallback((actor: ActorItem) => {
     onSelect(actor);
+    if (multiple) {
+      // Limpia, deja abierto y devuelve el foco para seguir agregando
+      setQuery("");
+      setOpen(true);
+      requestAnimationFrame(() => inputRef.current?.focus());
+    } else {
+      setQuery(actor.nombre);
+      setOpen(false);
+    }
+  }, [onSelect, multiple]);
+
+  // Enter -> selecciona el primer resultado visible (opcional)
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (selectFirstOnEnter && e.key === "Enter" && open && items.length > 0) {
+      e.preventDefault();
+      handlePick(items[0]);
+    }
   };
 
   return (
@@ -97,15 +111,10 @@ export default function ActorInput({
         ref={inputRef}
         type="text"
         value={query}
-        onChange={(e) => {
-          setQuery(e.target.value);
-          setOpen(true);
-        }}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
-        onBlur={() => {
-          // retrasa el blur para permitir el click en la lista
-          setTimeout(() => setOpen(false), 150);
-        }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}  // permite click en la lista
+        onKeyDown={handleKeyDown}
         disabled={disabled}
         placeholder={placeholder}
         className="w-full rounded-md border px-3 py-2 outline-none focus:ring"
@@ -113,7 +122,7 @@ export default function ActorInput({
       />
 
       {open && (
-        <div className="absolute z-50 mt-1 w-full rounded-md border bg-white shadow-lg">
+        <div className="absolute z-50 mt-1 w-full rounded-md border bg-white shadow-lg overflow-hidden">
           {loading && (
             <div className="px-3 py-2 text-sm text-gray-500">Buscando…</div>
           )}
@@ -133,12 +142,13 @@ export default function ActorInput({
           )}
 
           {!loading && !error && items.length > 0 && (
-            <ul className="max-h-64 overflow-auto">
+            <ul role="listbox" className="max-h-64 overflow-auto divide-y">
               {items.map((it) => (
                 <li
                   key={it.id}
-                  className="cursor-pointer px-3 py-2 hover:bg-gray-100"
-                  onMouseDown={(e) => e.preventDefault()}
+                  role="option"
+                  className="cursor-pointer px-3 py-2 hover:bg-gray-50"
+                  onMouseDown={(e) => e.preventDefault()} // evita blur
                   onClick={() => handlePick(it)}
                   title={it.nit ? `${it.nombre} — ${it.nit}` : it.nombre}
                 >

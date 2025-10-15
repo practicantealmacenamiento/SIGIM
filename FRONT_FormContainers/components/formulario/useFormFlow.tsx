@@ -249,8 +249,11 @@ export function useFormFlow(
 
       // Validaciones básicas por tipo (sin cambios funcionales)
       if (isActorTag(tag)) {
-        const actor = actorOverride ?? it.actor;
-        if (!actor?.id) throw new Error("Selecciona un actor válido.");
+  const actor = actorOverride ?? it.actor;
+  const v = (valueOverride ?? (it.value as string) ?? "").trim();
+  if (!actor?.id && !v) {
+    throw new Error("Escribe al menos un proveedor (separa por coma) o selecciona uno del catálogo.");
+  }
       } else if (q.type === "file") {
         const files: File[] = it.files || [];
         if (isOcr(q)) {
@@ -279,8 +282,24 @@ export function useFormFlow(
 
       let savedValue = "";
 
-      const actor = actorOverride ?? it.actor;
-      if (isActorTag(tag) && actor?.id) {
+      const actor = actorOverride ?? (it as any)?.actor;
+      const rawValue = valueOverride ?? (it.value as string) ?? "";
+      const trimmedValue = (rawValue || "").trim();
+
+      if (tag === "proveedor") {
+        const looksLikeJsonList = trimmedValue.startsWith("[") && trimmedValue.endsWith("]");
+        if (looksLikeJsonList && trimmedValue.length >= 2) {
+          fdSet(fd, "answer_text", trimmedValue);
+          savedValue = trimmedValue;
+        } else if (actor?.id) {
+          fdSet(fd, "actor_id", actor.id);
+          fdSet(fd, "answer_text", actor.nombre || "");
+          savedValue = actor.nombre || "";
+        } else {
+          fdSet(fd, "answer_text", trimmedValue);
+          savedValue = trimmedValue;
+        }
+      } else if (isActorTag(tag) && actor?.id) {
         fdSet(fd, "actor_id", actor.id);
         fdSet(fd, "answer_text", actor.nombre || "");
         savedValue = actor.nombre || "";

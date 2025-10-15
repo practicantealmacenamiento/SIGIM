@@ -370,6 +370,11 @@ export default function SubmissionDetailPage() {
               const typ = getQType(a, qIndex);
               const fileUrl = resolveAnswerFileUrl(a);
               const ans = a.answer_choice?.text ?? a.answer_text ?? "";
+              const rawMeta = (a as any)?.meta;
+              const metaEntries =
+                rawMeta && typeof rawMeta === "object" && !Array.isArray(rawMeta)
+                  ? Object.entries(rawMeta).filter(([_, v]) => v !== null && v !== "" && v !== undefined)
+                  : [];
 
               return (
                 <article
@@ -398,6 +403,26 @@ export default function SubmissionDetailPage() {
                     ) : (
                       <div className="mt-3 text-sm text-slate-500 dark:text-white/60">
                         (Sin respuesta)
+                      </div>
+                    )}
+
+                    {metaEntries.length > 0 && (
+                      <div className="mt-3 rounded-xl border border-slate-200 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-3 text-sm text-slate-700 dark:text-white/70">
+                        <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-white/50 mb-2">
+                          Datos adicionales
+                        </div>
+                        <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          {metaEntries.map(([key, value]) => (
+                            <div key={key} className="flex flex-col">
+                              <dt className="text-xs text-slate-500 dark:text-white/50">
+                                {key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                              </dt>
+                              <dd className="text-[15px] font-medium text-slate-800 dark:text-white/80">
+                                {typeof value === "number" ? value : String(value)}
+                              </dd>
+                            </div>
+                          ))}
+                        </dl>
                       </div>
                     )}
 
