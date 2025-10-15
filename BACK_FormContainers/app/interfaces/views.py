@@ -10,7 +10,6 @@ from django.contrib.auth import login as dj_login, logout as dj_logout
 
 from rest_framework import viewsets, mixins, status, serializers
 from rest_framework.authentication import SessionAuthentication
-from rest_framework.generics import ListCreateAPIView, RetrieveAPIView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from rest_framework.pagination import PageNumberPagination
@@ -34,17 +33,13 @@ from .auth import (
 )
 
 # ===== Aplicación / Casos de uso =====
-from app.application.commands import SaveAndAdvanceCommand, AddTableRowCommand, UpdateTableRowCommand, DeleteTableRowCommand
-from app.application.services import SubmissionService, HistoryService
+from app.application.commands import SaveAndAdvanceCommand
 from app.application.questionnaire import QuestionnaireService
 from app.application.verification import VerificationService, InvalidImage, ExtractionFailed
 from app.domain.exceptions import DomainException
 
 # ===== Manejo de excepciones =====
-# (Asumimos que existe en tu repo; no lo tocamos)
 from app.interfaces.exception_handlers import translate_domain_exception
-from app.infrastructure.storage import load_questionnaire_layout
-from app.infrastructure.models import Questionnaire as QuestionnaireModel
 
 # ===== Infraestructura / Adaptadores =====
 from app.infrastructure.serializers import (
@@ -59,15 +54,9 @@ from app.infrastructure.serializers import (
     VerificationInputSerializer,
     QuestionnaireListItemSerializer,
     HistorialItemSerializer,
-    AddTableRowInputSerializer, 
-    UpdateTableRowInputSerializer, 
-    TableRowOutputSerializer,
-    GridDefinitionSerializer
 )
 from app.infrastructure.factories import get_service_factory
 from app.infrastructure.repositories import DjangoSubmissionRepository, DjangoQuestionnaireRepository
-from app.infrastructure.models import Question as QuestionModel
-from app.application.commands import TableCellInput
 
 
 # =========================================================
@@ -262,6 +251,7 @@ class VerificacionUniversalAPIView(APIView):
 class PrimeraPreguntaAPIView(APIView):
     authentication_classes = [BearerOrTokenAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -269,6 +259,66 @@ class PrimeraPreguntaAPIView(APIView):
 
     def _get_questionnaire_service(self) -> QuestionnaireService:
         return self._factory.create_questionnaire_service()
+
+    @extend_schema(
+        request=SaveAndAdvanceInputSerializer,
+        responses={200: SaveAndAdvanceResponseSerializer, 400: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
+        summary="Guardar respuesta y avanzar (primera pregunta)",
+        tags=["Cuestionario"],
+        description=(
+            "Guarda una respuesta y devuelve la siguiente pregunta. "
+            "Para la pregunta especial PROVEEDOR (sin grids): "
+            "envía la lista completa en `proveedores` o como JSON en `answer_text`."
+        ),
+        examples=[
+            OpenApiExample(
+                "PROVEEDOR con lista estructurada",
+                value={
+                    "submission_id": "f4d7c2f6-5f2d-4a1d-8f6d-1d2e3c4b5a6f",
+                    "question_id": "3a2b1c4d-5e6f-7081-9201-a2b3c4d5e6f7",
+                    "proveedores": [
+                        {"nombre":"ACME","estibas":3,"unidades":120,"unidad":"KG","recipientes":2,"orden_compra":"OC-123"},
+                        {"nombre":"TransLuna","estibas":1,"unidades":40,"unidad":"UN","recipientes":None,"orden_compra":""}
+                    ]
+                }
+            ),
+            OpenApiExample(
+                "PROVEEDOR con answer_text JSON",
+                value={
+                    "submission_id": "f4d7c2f6-5f2d-4a1d-8f6d-1d2e3c4b5a6f",
+                    "question_id": "3a2b1c4d-5e6f-7081-9201-a2b3c4d5e6f7",
+                    "answer_text": "[{\"nombre\":\"ACME\",\"estibas\":3,\"unidades\":120,\"unidad\":\"KG\"}]"
+                }
+            ),
+        ],
+    )
+    def post(self, request):
+        serializer = SaveAndAdvanceInputSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+
+        # Datos normalizados desde el serializer
+        cmd_kwargs = serializer.to_domain_input()
+
+        # Compat: alias del front para texto crudo "value" (el serializer no lo maneja a propósito)
+        if not cmd_kwargs.get("answer_text") and "value" in request.data:
+            raw = request.data.get("value")
+            cmd_kwargs["answer_text"] = None if raw is None else str(raw)
+
+        # user_id del request tiene prioridad
+        cmd_kwargs["user_id"] = getattr(request.user, "id", None)
+
+        cmd = SaveAndAdvanceCommand(**cmd_kwargs)
+
+        try:
+            svc: QuestionnaireService = self._get_questionnaire_service()
+            result = svc.save_and_advance(cmd)
+            return Response(SaveAndAdvanceResponseSerializer(result).data)
+        except DomainException as e:
+            return translate_domain_exception(e)
+        except DjangoValidationError as e:
+            return Response({"error": e.message}, status=400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
 
     @extend_schema(
         parameters=[OpenApiParameter("questionnaire_id", OpenApiTypes.UUID, required=True)],
@@ -282,11 +332,11 @@ class PrimeraPreguntaAPIView(APIView):
             return Response({"error": "Falta 'questionnaire_id'."}, status=400)
 
         try:
-            from uuid import UUID
+            from uuid import UUID as _UUID
             svc = self._get_questionnaire_service()
 
             # 1) Dominio: obtener ENTIDAD de la primera pregunta
-            d_question = svc.get_first_question(UUID(qid))  # <- ahora sí pasamos el ID requerido
+            d_question = svc.get_first_question(_UUID(qid))
 
             # 2) Infra: convertir a modelo para el serializer actual
             from app.infrastructure.repositories import DjangoQuestionRepository
@@ -304,7 +354,6 @@ class PrimeraPreguntaAPIView(APIView):
         except Exception as e:
             return Response({"error": str(e)}, status=500)
 
-# GuardarYAvanzarAPIView (solo la parte relevante)
 
 class GuardarYAvanzarAPIView(APIView):
     """
@@ -321,54 +370,49 @@ class GuardarYAvanzarAPIView(APIView):
     def _get_questionnaire_service(self) -> QuestionnaireService:
         return self._factory.create_questionnaire_service()
 
-    # ❌ Ya no dependemos de nombres específicos como "archivo"/"archivos".
-    #    Dejamos este helper sin uso o puedes eliminarlo.
-    def _prepare_uploads(self, request, data):
-        return {}
-
     @extend_schema(
         request=SaveAndAdvanceInputSerializer,
         responses={200: SaveAndAdvanceResponseSerializer, 400: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
         summary="Guardar respuesta y avanzar",
         tags=["Cuestionario"],
-        description="Guarda una respuesta y devuelve la siguiente pregunta. Requiere usuario autenticado.",
+        description=(
+            "Guarda una respuesta y devuelve la siguiente pregunta. "
+            "Para la pregunta PROVEEDOR, envía `proveedores` o `answer_text` con JSON de lista."
+        ),
+        examples=[
+            OpenApiExample(
+                "PROVEEDOR con lista estructurada",
+                value={
+                    "submission_id": "f4d7c2f6-5f2d-4a1d-8f6d-1d2e3c4b5a6f",
+                    "question_id": "3a2b1c4d-5e6f-7081-9201-a2b3c4d5e6f7",
+                    "proveedores": [
+                        {"nombre":"ACME","estibas":3,"unidades":120,"unidad":"KG","recipientes":2,"orden_compra":"OC-123"}
+                    ]
+                }
+            )
+        ],
     )
     def post(self, request):
-        # 1) Validación base (IMPORTANTE: pasar el request en el context)
+        # 1) Validación base
         serializer = SaveAndAdvanceInputSerializer(
             data=request.data,
             context={"request": request}
         )
         serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
 
-        # 2) Normalización de alias del front (compatibilidad)
-        answer_text = data.get("answer_text")
-        if answer_text is None and "value" in request.data:
+        # 2) Datos normalizados desde el serializer
+        cmd_kwargs = serializer.to_domain_input()
+
+        # 3) Compat alias "value" para texto crudo
+        if not cmd_kwargs.get("answer_text") and "value" in request.data:
             raw = request.data.get("value")
-            answer_text = None if raw is None else str(raw)
+            cmd_kwargs["answer_text"] = None if raw is None else str(raw)
 
-        answer_choice_id = data.get("answer_choice_id")
-        if answer_choice_id is None and "choice_id" in request.data:
-            from uuid import UUID
-            try:
-                answer_choice_id = UUID(str(request.data.get("choice_id")))
-            except Exception:
-                answer_choice_id = None
+        # 4) user_id del request tiene prioridad
+        cmd_kwargs["user_id"] = getattr(request.user, "id", None)
 
-        # 3) TOMAMOS LOS ARCHIVOS QUE YA AGRUPÓ EL SERIALIZER
-        uploads_files = data.get("_uploads", [])
-        actor_id = data.get("actor_id")
-
-        # 4) Construir comando de aplicación
-        cmd = SaveAndAdvanceCommand(
-            submission_id=data["submission_id"],
-            question_id=data["question_id"],
-            answer_text=answer_text,
-            answer_choice_id=answer_choice_id,
-            uploads=uploads_files,
-            actor_id=actor_id,
-        )
+        # 5) Construir comando de aplicación
+        cmd = SaveAndAdvanceCommand(**cmd_kwargs)
 
         try:
             svc: QuestionnaireService = self._get_questionnaire_service()
@@ -400,99 +444,6 @@ class SubmissionViewSet(mixins.ListModelMixin,
     pagination_class = StandardPageNumberPagination
 
     @extend_schema(
-        request=AddTableRowInputSerializer,
-        responses={200: TableRowOutputSerializer},
-        methods=["POST"],
-        tags=["Submissions", "Tabular"],
-        summary="Agregar una fila (row) a una submission tabular",
-        description=(
-            "Agrega una línea a una tabla (grid) para este cuestionario. "
-            "Cada celda referencia una pregunta (columna). "
-            "Para columnas con semantic_tag de actor (proveedor/transportista/receptor) "
-            "DEBE enviarse actor_id y no se permite texto libre. "
-            "Archivos: enviar como 'cells[<index>][file]'."
-        ),
-        examples=[
-            OpenApiExample(
-                "JSON sin archivos",
-                value={
-                    "submission_id": "00000000-0000-0000-0000-000000000001",
-                    "cells": [
-                        {"question_id":"...","answer_text":"ABC123"},
-                        {"question_id":"...","actor_id":"..."}
-                    ]
-                }
-            )
-        ]
-    )
-    @action(detail=True, methods=["post"], url_path="table-rows")
-    def add_table_row(self, request, pk=None):
-        ser = AddTableRowInputSerializer(data={**request.data, "submission_id": pk}, context={"request": request})
-        ser.is_valid(raise_exception=True)
-        table_id = ser.validated_data.get("table_id") or request.query_params.get("table_id")
-        svc = get_service_factory().create_tabular_form_service()
-        result = svc.add_row(
-            AddTableRowCommand(
-            submission_id=ser.validated_data["submission_id"],
-            row_index=ser.validated_data.get("row_index"),
-            cells=[TableCellInput(**c) for c in ser.validated_data["cells"]],
-        ), table_id=table_id)
-        return Response(TableRowOutputSerializer(result).data)
-
-    @extend_schema(
-        request=UpdateTableRowInputSerializer,
-        responses={200: TableRowOutputSerializer},
-        methods=["PUT","PATCH"],
-        tags=["Submissions", "Tabular"],
-        summary="Actualizar una fila específica",
-    )
-    @action(detail=True, methods=["put","patch"], url_path=r"table-rows/(?P<row_index>\d+)")
-    def update_table_row(self, request, pk=None, row_index=None):
-        ser = UpdateTableRowInputSerializer(data={**request.data, "submission_id": pk, "row_index": row_index},
-                                            context={"request": request})
-        ser.is_valid(raise_exception=True)
-        table_id = ser.validated_data.get("table_id") or request.query_params.get("table_id")
-        svc = get_service_factory().create_tabular_form_service()
-        result = svc.update_row(
-            UpdateTableRowCommand(
-            submission_id=ser.validated_data["submission_id"],
-            row_index=int(ser.validated_data["row_index"]),
-            cells=[TableCellInput(**c) for c in ser.validated_data["cells"]],
-        ), table_id=table_id)
-        return Response(TableRowOutputSerializer(result).data)
-
-    @extend_schema(
-        responses={204: OpenApiTypes.NONE},
-        methods=["DELETE"],
-        tags=["Submissions", "Tabular"],
-        summary="Eliminar una fila específica",
-    )
-    @action(detail=True, methods=["delete"], url_path=r"table-rows/(?P<row_index>\d+)")
-    def delete_table_row(self, request, pk=None, row_index=None):
-        table_id = request.query_params.get("table_id") or (request.data.get("table_id") if hasattr(request, "data") else None)
-        svc = get_service_factory().create_tabular_form_service()
-        svc.delete_row(DeleteTableRowCommand(
-            submission_id=UUID(str(pk)),
-            row_index=int(row_index)
-        ), table_id=table_id)
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-    @extend_schema(
-        parameters=[OpenApiParameter("as_table", OpenApiTypes.BOOL, required=False)],
-        responses={200: OpenApiTypes.OBJECT},
-        methods=["GET"],
-        tags=["Submissions", "Tabular"],
-        summary="Detalle enriquecido (modo tabla)",
-        description="Si `as_table=1`, retorna filas (rows) agrupadas por índice."
-    )
-    @action(detail=True, methods=["get"], url_path="table-rows")
-    def list_table_rows(self, request, pk=None):
-        table_id = request.query_params.get("table_id")
-        svc = get_service_factory().create_tabular_form_service()
-        rows = svc.list_rows(UUID(str(pk)), table_id=table_id)
-        return Response({"submission_id": str(pk), "table_id": table_id, "rows": TableRowOutputSerializer(rows, many=True).data})
-
-    @extend_schema(
         request=SubmissionCreateSerializer,
         responses={201: SubmissionModelSerializer, 400: OpenApiTypes.OBJECT},
         tags=["Submissions"],
@@ -513,7 +464,8 @@ class SubmissionViewSet(mixins.ListModelMixin,
         return Response(
             SubmissionModelSerializer(created, context={"request": request}).data,
             status=201,
-    )
+        )
+
     @extend_schema(
         parameters=[
             OpenApiParameter("incluir_borradores", OpenApiTypes.STR, required=False),
@@ -568,21 +520,13 @@ class SubmissionViewSet(mixins.ListModelMixin,
     @action(detail=True, methods=["post"], url_path="finalize")
     def finalize(self, request, pk=None):
         try:
-            # ✅ Inyección por fábrica (mantiene la capa de aplicación desacoplada)
             svc = get_service_factory().create_submission_service()
-
-            # ✅ Ejecutar caso de uso (retorna un dict con los updates)
             updates = svc.finalize_submission(UUID(str(pk)))
-
-            # ✅ No acceder a result.id (no existe). Devolvemos el id de la ruta.
-            #    Mantenemos la respuesta simple y estable para el front.
             return Response({
                 "detail": "Finalizada",
                 "submission_id": str(pk),
-                # si necesitas inspección en UI/admin, puedes exponer los updates:
                 # "updates": updates,
             })
-
         except DomainException as e:
             return translate_domain_exception(e)
         except Exception as e:
@@ -635,9 +579,9 @@ class HistorialReguladoresAPIView(APIView):
             sc = (request.query_params.get("solo_completados") or "").strip().lower()
             solo_completados = sc in ("1", "true", "t", "yes", "y")
 
-            # 2) Servicio con dependencias inyectadas (repositorios)
+            # 2) Servicio con dependencias inyectadas
             factory = get_service_factory()
-            svc = factory.create_history_service()  # ✅ inyecta submission_repo, answer_repo, question_repo
+            svc = factory.create_history_service()
 
             # 3) Caso de uso
             items = svc.list_history(
@@ -655,7 +599,6 @@ class HistorialReguladoresAPIView(APIView):
 
             return Response(HistorialItemSerializer(items, many=True).data)
         except Exception as e:
-            # Devuelve el error legible al front
             return Response({"error": str(e)}, status=500)
 
 
@@ -791,52 +734,3 @@ class ActorViewSet(viewsets.ViewSet):
             return Response(ActorModelSerializer(actor).data)
         except Actor.DoesNotExist:
             return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
-
-class QuestionnaireGridDefinitionAPIView(APIView):
-    """
-    Devuelve el layout visual (anchos, headers) del cuestionario,
-    para que el frontend pinte el grid idéntico al Excel.
-    """
-    authentication_classes = [BearerOrTokenAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    @extend_schema(
-        parameters=[OpenApiParameter("qid", OpenApiTypes.UUID, required=True)],
-        responses={200: GridDefinitionSerializer, 404: OpenApiTypes.OBJECT},
-        tags=["Cuestionarios"],
-        description="Layout JSON del cuestionario (anchos/headers exactamente como el Excel de origen)."
-    )
-    def get(self, request, qid: str):
-        try:
-            q = QuestionnaireModel.objects.filter(id=UUID(str(qid))).only("id", "title", "version", "timezone").first()
-            if not q:
-                return Response({"error": "Cuestionario no encontrado."}, status=404)
-            layout = load_questionnaire_layout(q.id)
-            if not layout:
-                return Response({"error": "No hay layout cargado para este cuestionario."}, status=404)
-            # Seguridad mínima: verificar que el layout corresponde
-            layout["questionnaire_id"] = str(q.id)
-            layout["title"] = q.title
-            layout["version"] = q.version
-            layout["timezone"] = q.timezone
-            return Response(GridDefinitionSerializer(layout).data)
-        except Exception as e:
-            return Response({"error": str(e)}, status=500)
-
-class QuestionnaireGridsDefinitionAPIView(APIView):
-    authentication_classes = [BearerOrTokenAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    @extend_schema(tags=["Cuestionarios"], responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT})
-    def get(self, request, qid: str):
-        layout = load_questionnaire_layout(qid)
-        if not layout:
-            return Response({"error": "No hay layout para este cuestionario."}, status=404)
-        grids = layout.get("grids")
-        if grids:
-            return Response({"questionnaire_id": str(qid), "grids": grids})
-        # fallback: si no hay "grids" pero sí "columns", lo tratamos como single-grid "full"
-        cols = layout.get("columns") or []
-        if cols:
-            return Response({"questionnaire_id": str(qid), "grids": [{"id": "default","title": layout.get("title") or "Grid","mode":"full","columns": cols}]})
-        return Response({"grids": []})

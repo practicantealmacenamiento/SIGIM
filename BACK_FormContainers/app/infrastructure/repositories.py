@@ -30,7 +30,7 @@ from app.infrastructure.models import (
     Question as QuestionModel,
     Choice as ChoiceModel,
     Actor as ActorModel,
-    Questionnaire as QuestionnaireModel
+    Questionnaire as QuestionnaireModel,
 )
 
 # ------------------------------
@@ -39,19 +39,22 @@ from app.infrastructure.models import (
 class DjangoAnswerRepository(AnswerRepository):
     @transaction.atomic
     def save(self, answer: DAnswer) -> DAnswer:
+        """
+        Upsert por ID. Compatible con el esquema antiguo (answer_file/meta/timestamp)
+        y opcionalmente con table_id/row_index si existen en el modelo.
+        """
         try:
             am = AnswerModel.objects.select_for_update().get(id=answer.id)
-            # Use explicit mapping function to convert entity to model
             self._update_model_from_entity(am, answer)
             am.save()
         except AnswerModel.DoesNotExist:
-            # Use explicit mapping function to create model from entity
             am = self._create_model_from_entity(answer)
         return self._model_to_entity(am)
 
     def get(self, id: UUID) -> Optional[DAnswer]:
         am = (
-            AnswerModel.objects.select_related("submission", "question", "answer_choice", "user")
+            AnswerModel.objects
+            .select_related("submission", "question", "answer_choice", "user")
             .filter(id=id)
             .first()
         )
@@ -62,6 +65,7 @@ class DjangoAnswerRepository(AnswerRepository):
         am = AnswerModel.objects.filter(id=id).first()
         if not am:
             return
+        # borrar archivo físico si existe
         if getattr(am, "answer_file", None):
             am.answer_file.delete(save=False)
         am.delete()
@@ -78,7 +82,8 @@ class DjangoAnswerRepository(AnswerRepository):
 
     def list_by_submission(self, submission_id: UUID) -> List[DAnswer]:
         qs = (
-            AnswerModel.objects.filter(submission_id=submission_id)
+            AnswerModel.objects
+            .filter(submission_id=submission_id)
             .select_related("submission", "question", "answer_choice", "user")
             .order_by("timestamp")
         )
@@ -86,11 +91,30 @@ class DjangoAnswerRepository(AnswerRepository):
 
     def list_by_question(self, question_id: UUID) -> List[DAnswer]:
         qs = (
-            AnswerModel.objects.filter(question_id=question_id)
+            AnswerModel.objects
+            .filter(question_id=question_id)
             .select_related("submission", "question", "answer_choice", "user")
             .order_by("timestamp")
         )
         return [self._model_to_entity(x) for x in qs]
+
+    # 🔹 NUEVO: optimiza el merge por pregunta + submission
+    def list_by_submission_question(self, *, submission_id: UUID, question_id: UUID) -> List[DAnswer]:
+        qs = (
+            AnswerModel.objects
+            .filter(submission_id=submission_id, question_id=question_id)
+            .select_related("submission", "question", "answer_choice")
+            .order_by("timestamp")
+        )
+        return [self._model_to_entity(x) for x in qs]
+
+    # 🔹 NUEVO: guarda en lote (fallback a save uno a uno)
+    @transaction.atomic
+    def save_many(self, answers: List[DAnswer]) -> List[DAnswer]:
+        out: List[DAnswer] = []
+        for a in answers:
+            out.append(self.save(a))
+        return out
 
     # helpers
     def _delete_queryset(self, qs) -> int:
@@ -127,29 +151,37 @@ class DjangoAnswerRepository(AnswerRepository):
         )
         return self._delete_queryset(qs)
 
-    # Explicit bidirectional mapping functions
+    # ---------- mapeos entidad/modelo (esquema nuevo) ----------
     def _model_to_entity(self, am: AnswerModel) -> DAnswer:
-        """Convert AnswerModel to Answer domain entity."""
+        """
+        Convert AnswerModel → dominio con campos nuevos.
+        Soporta opcionalmente table_id/row_index si existen.
+        """
+        created_at = getattr(am, "created_at", None) or getattr(am, "timestamp", None)
+        updated_at = getattr(am, "updated_at", None)
+
+        table_id = getattr(am, "table_id", None)
+        row_index = getattr(am, "row_index", None)
+
         return DAnswer.rehydrate(
             id=am.id,
             submission_id=am.submission_id,
             question_id=am.question_id,
-            user_id=am.user_id,
+            user_id=getattr(am, "user_id", None),
             answer_text=am.answer_text,
             answer_choice_id=am.answer_choice_id,
             answer_file_path=(am.answer_file.name if getattr(am, "answer_file", None) else None),
-            ocr_meta=am.ocr_meta or {},
+            ocr_meta=getattr(am, "ocr_meta", {}) or {},
             meta=am.meta or {},
-            timestamp=am.timestamp,
+            timestamp=getattr(am, "timestamp", None),
         )
 
     def _create_model_from_entity(self, answer: DAnswer) -> AnswerModel:
-        """Create a new AnswerModel from Answer domain entity."""
         return AnswerModel.objects.create(
             id=answer.id,
             submission_id=answer.submission_id,
             question_id=answer.question_id,
-            user_id=answer.user_id,
+            user_id=getattr(answer, "user_id", None),
             answer_text=answer.answer_text,
             answer_choice_id=answer.answer_choice_id,
             answer_file=answer.answer_file_path or None,
@@ -159,12 +191,12 @@ class DjangoAnswerRepository(AnswerRepository):
         )
 
     def _update_model_from_entity(self, am: AnswerModel, answer: DAnswer) -> None:
-        """Update existing AnswerModel with data from Answer domain entity."""
         am.submission_id = answer.submission_id
         am.question_id = answer.question_id
-        am.user_id = answer.user_id
         am.answer_text = answer.answer_text
         am.answer_choice_id = answer.answer_choice_id
+        if hasattr(am, "user_id"):
+            am.user_id = getattr(answer, "user_id", None)
         am.answer_file = answer.answer_file_path or None
         am.ocr_meta = answer.ocr_meta or {}
         am.meta = answer.meta or {}
@@ -238,7 +270,6 @@ class DjangoSubmissionRepository(SubmissionRepository):
         self.ensure_regulador_on_create(obj)
         return self._model_to_entity(obj)
 
-
     def get_fase1_by_regulador(self, regulador_id: UUID) -> Optional[DSubmission]:
         model = (
             SubmissionModel.objects.filter(regulador_id=regulador_id, tipo_fase="entrada")
@@ -310,7 +341,7 @@ class DjangoSubmissionRepository(SubmissionRepository):
     def detail_queryset(self):
         answers_qs = (
             AnswerModel.objects
-            .select_related("question", "answer_choice", "user")
+            .select_related("question", "answer_choice")
             .order_by("timestamp")
         )
         return (
@@ -400,14 +431,14 @@ class DjangoSubmissionRepository(SubmissionRepository):
     def _entity_to_model_data(self, entity: DSubmission) -> Dict[str, Any]:
         """Convert Submission domain entity to model data dictionary."""
         return {
-            'id': entity.id,
-            'questionnaire_id': entity.questionnaire_id,
-            'tipo_fase': entity.tipo_fase,
-            'regulador_id': entity.regulador_id,
-            'placa_vehiculo': entity.placa_vehiculo,
-            'finalizado': entity.finalizado,
-            'fecha_creacion': entity.fecha_creacion,
-            'fecha_cierre': entity.fecha_cierre,
+            "id": entity.id,
+            "questionnaire_id": entity.questionnaire_id,
+            "tipo_fase": entity.tipo_fase,
+            "regulador_id": entity.regulador_id,
+            "placa_vehiculo": entity.placa_vehiculo,
+            "finalizado": entity.finalizado,
+            "fecha_creacion": entity.fecha_creacion,
+            "fecha_cierre": entity.fecha_cierre,
         }
 
     def _update_model_from_entity(self, model: SubmissionModel, entity: DSubmission) -> None:
@@ -430,7 +461,12 @@ class DjangoQuestionRepository(QuestionRepository):
         return self._model_to_entity(model) if model else None
 
     def list_by_questionnaire(self, questionnaire_id: UUID) -> List[DQ]:
-        models = list(QuestionModel.objects.filter(questionnaire_id=questionnaire_id).order_by("order").prefetch_related("choices"))
+        models = list(
+            QuestionModel.objects
+            .filter(questionnaire_id=questionnaire_id)
+            .order_by("order")
+            .prefetch_related("choices")
+        )
         return [self._model_to_entity(model) for model in models]
 
     def next_in_questionnaire(self, current_question_id: UUID) -> Optional[UUID]:
@@ -456,7 +492,7 @@ class DjangoQuestionRepository(QuestionRepository):
             .first()
         )
         return self._model_to_entity(model) if model else None
-    
+
     def get_by_id(self, id: str) -> Optional[QuestionModel]:
         """
         Retorna el modelo Question por id (UUID en str) o None si no existe.
@@ -472,14 +508,16 @@ class DjangoQuestionRepository(QuestionRepository):
         """Convert QuestionModel to Question domain entity."""
         choices = []
         # Solo incluir opciones para preguntas de tipo 'choice'
-        if model.type == "choice" and hasattr(model, 'choices'):
+        if model.type == "choice" and hasattr(model, "choices"):
             for choice_model in model.choices.all():
-                choices.append(DC(
-                    id=choice_model.id,
-                    text=choice_model.text,
-                    branch_to=choice_model.branch_to_id
-                ))
-        
+                choices.append(
+                    DC(
+                        id=choice_model.id,
+                        text=choice_model.text,
+                        branch_to=choice_model.branch_to_id,
+                    )
+                )
+
         return DQ(
             id=model.id,
             text=model.text,
@@ -503,11 +541,7 @@ class DjangoChoiceRepository(ChoiceRepository):
     # Explicit mapping functions
     def _model_to_entity(self, model: ChoiceModel) -> DC:
         """Convert ChoiceModel to Choice domain entity."""
-        return DC(
-            id=model.id,
-            text=model.text,
-            branch_to=model.branch_to_id
-        )
+        return DC(id=model.id, text=model.text, branch_to=model.branch_to_id)
 
 
 # --------------------------------------------
@@ -515,20 +549,19 @@ class DjangoChoiceRepository(ChoiceRepository):
 # --------------------------------------------
 class DjangoActorRepository(ActorRepository):
     def get(self, id: UUID):
-        from app.infrastructure.models import Actor as ActorModel
         try:
             obj = ActorModel.objects.get(id=id, activo=True)
-            return obj  # devolvemos el modelo; los serializers manuales ya lo toleran
+            # devolvemos el modelo; los serializers manuales ya lo toleran
+            return obj
         except ActorModel.DoesNotExist:
             return None
-    
+
     def list_by_type(self, tipo: str, *, search: Optional[str] = None, limit: int = 50):
-        from app.infrastructure.models import Actor as ActorModel
         qs = ActorModel.objects.filter(activo=True, tipo=tipo)
         if search:
             qs = qs.filter(Q(nombre__icontains=search) | Q(documento__icontains=search))
         return list(qs.order_by("nombre")[:limit])
-    
+
     def public_list(self, params):
         qs = ActorModel.objects.filter(activo=True)
         tipo = params.get("tipo")
@@ -574,8 +607,11 @@ class DjangoQuestionnaireRepository(QuestionnaireRepository):
             # Solo incluir opciones para preguntas de tipo 'choice'
             choices = []
             if q.type == "choice":
-                choices = [DC(id=c.id, text=c.text, branch_to=(c.branch_to_id or None)) for c in q.choices.all()]
-            
+                choices = [
+                    DC(id=c.id, text=c.text, branch_to=(c.branch_to_id or None))
+                    for c in q.choices.all()
+                ]
+
             questions.append(
                 DQ(
                     id=q.id,
@@ -600,7 +636,12 @@ class DjangoQuestionnaireRepository(QuestionnaireRepository):
     def list_all(self) -> List[DQn]:
         qs = (
             QuestionnaireModel.objects
-            .prefetch_related(Prefetch("questions", queryset=QuestionModel.objects.order_by("order").prefetch_related("choices")))
+            .prefetch_related(
+                Prefetch(
+                    "questions",
+                    queryset=QuestionModel.objects.order_by("order").prefetch_related("choices"),
+                )
+            )
             .order_by("title", "version")
         )
         return [self._model_to_entity(x) for x in qs]
@@ -609,7 +650,12 @@ class DjangoQuestionnaireRepository(QuestionnaireRepository):
         qn = (
             QuestionnaireModel.objects
             .filter(id=id)
-            .prefetch_related(Prefetch("questions", queryset=QuestionModel.objects.order_by("order").prefetch_related("choices")))
+            .prefetch_related(
+                Prefetch(
+                    "questions",
+                    queryset=QuestionModel.objects.order_by("order").prefetch_related("choices"),
+                )
+            )
             .first()
         )
         return self._model_to_entity(qn) if qn else None
@@ -672,7 +718,12 @@ class DjangoQuestionnaireRepository(QuestionnaireRepository):
         qn = (
             QuestionnaireModel.objects
             .filter(id=qn.id)
-            .prefetch_related(Prefetch("questions", queryset=QuestionModel.objects.order_by("order").prefetch_related("choices")))
+            .prefetch_related(
+                Prefetch(
+                    "questions",
+                    queryset=QuestionModel.objects.order_by("order").prefetch_related("choices"),
+                )
+            )
             .first()
         )
         return self._model_to_entity(qn)

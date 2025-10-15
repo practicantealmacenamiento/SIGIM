@@ -7,8 +7,6 @@ from app.interfaces.views import (
     UnifiedLoginAPIView,
     WhoAmIAPIView,
     UnifiedLogoutAPIView,
-    QuestionnaireGridDefinitionAPIView,
-    QuestionnaireGridsDefinitionAPIView,
 
     # OCR / Cuestionario / Submissions / Catálogos / Media / Historial
     VerificacionUniversalAPIView,
@@ -58,13 +56,10 @@ urlpatterns = [
     # ======== CUESTIONARIO ========
     path(f'{API_PREFIX}cuestionario/primera/', PrimeraPreguntaAPIView.as_view(), name='primera-pregunta'),
     re_path(rf'^{API_PREFIX}cuestionario/guardar_avanzar/?$', GuardarYAvanzarAPIView.as_view(), name='guardar-y-avanzar'),
-    path(f'{API_PREFIX}cuestionarios/<uuid:qid>/grid/', QuestionnaireGridDefinitionAPIView.as_view(), name='questionnaire-grid'),
-    path(f'{API_PREFIX}cuestionarios/<uuid:qid>/grids/', QuestionnaireGridsDefinitionAPIView.as_view(), name='questionnaire-grids'),
 
     # Acciones custom de Submission (fuera del router por claridad)
     path(f'{API_PREFIX}submissions/<uuid:pk>/finalize/', SubmissionViewSet.as_view({'post': 'finalize'}), name='submission-finalize'),
     path(f'{API_PREFIX}submissions/<uuid:pk>/enriched/', SubmissionViewSet.as_view({'get': 'enriched_detail'}), name='submission-enriched'),
-
 
     # ======== MEDIA PROTEGIDO ========
     path(f'{API_PREFIX}secure-media/<path:file_path>/', MediaProtectedAPIView.as_view(), name='secure-media'),
@@ -78,4 +73,3 @@ urlpatterns = [
     # ======== PREGUNTA DETALLE ========
     re_path(rf'^{API_PREFIX}questions/(?P<id>[0-9a-f-]+)/?$', QuestionDetailAPIView.as_view(), name='question-detail'),
 ]
-

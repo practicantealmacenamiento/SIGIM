@@ -32,12 +32,12 @@ class AnswerService:
 
     def create_answer(self, cmd: CreateAnswerCommand) -> Answer:
         """
-        Crea una respuesta básica. Si `upload` viene definido, se persiste el archivo
+        Crea una respuesta básica. Si `answer_file` viene definido, se persiste el archivo
         y se guarda la ruta lógica en `answer_file_path`.
         """
         file_path = None
-        if cmd.upload:
-            file_path = self._store_upload(cmd.upload)
+        if getattr(cmd, 'answer_file', None):
+            file_path = self._store_answer_file(cmd.answer_file)
 
         entity = Answer.create_new(
             submission_id=cmd.submission_id,
@@ -77,13 +77,13 @@ class AnswerService:
             entity.update_choice(cmd.answer_choice_id)
 
         # Archivo
-        if cmd.upload is not UNSET:
+        if getattr(cmd, 'answer_file', UNSET) is not UNSET:
             old_path = entity.answer_file_path
-            if cmd.upload is None:
+            if cmd.answer_file is None:
                 # Limpieza explícita
                 entity.update_file_path(None)
             else:
-                new_path = self._store_upload(cmd.upload)
+                new_path = self._store_answer_file(cmd.answer_file)
                 entity.update_file_path(new_path)
                 if old_path and cmd.delete_old_file_on_replace:
                     # Best-effort: si falla, no interrumpimos el flujo
@@ -120,14 +120,14 @@ class AnswerService:
 
     # -------------------- Helpers -------------------- #
 
-    def _store_upload(self, upload) -> str:
+    def _store_answer_file(self, file_obj) -> str:
         """
         Persiste el archivo mediante el puerto de storage y devuelve el path relativo.
         Carpeta: uploads/YYYY/MM/DD/
         """
         today = datetime.now(timezone.utc)
         folder = os.path.join("uploads", f"{today.year:04d}", f"{today.month:02d}", f"{today.day:02d}")
-        return self.storage.save(folder=folder, file_obj=upload)
+        return self.storage.save(folder=folder, file_obj=file_obj)
 
 
 def _norm_text(value: Optional[str]) -> Optional[str]:

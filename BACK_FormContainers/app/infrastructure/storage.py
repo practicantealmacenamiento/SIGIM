@@ -82,9 +82,9 @@ class DjangoDefaultStorageAdapter(FileStorage):
             folder = self._validate_and_clean_folder(folder)
 
             # Generar nombre seguro
-            original_name = getattr(file_obj, "name", "upload")
+            original_name = getattr(file_obj, "name", "file")
             if not original_name:
-                original_name = "upload"
+                original_name = "file"
 
             ext = (Path(original_name).suffix or "").lower()
             safe_name = f"{uuid.uuid4().hex}{ext}"
@@ -274,35 +274,3 @@ def _as_str_uuid(v: Union[str, UUID]) -> str:
         return str(v)
     except Exception:
         return f"{v}"
-
-def get_layout_storage_path(questionnaire_id: Union[str, UUID]) -> str:
-    """
-    Ruta (en el default_storage) donde se guarda el layout JSON del cuestionario.
-    """
-    return f"questionnaire_layouts/{_as_str_uuid(questionnaire_id)}.json"
-
-def load_questionnaire_layout(questionnaire_id: Union[str, UUID]) -> Optional[dict]:
-    """
-    Lee el JSON de layout (anchos/headers/columnas) desde el storage.
-    Retorna dict o None si no existe.
-    """
-    path = get_layout_storage_path(questionnaire_id)
-    try:
-        if not default_storage.exists(path):
-            return None
-        with default_storage.open(path, "rb") as f:
-            return json.loads(f.read().decode("utf-8"))
-    except Exception:
-        # No propagamos errores de IO a la vista; la vista devolverá 404 si no hay layout
-        return None
-
-def save_questionnaire_layout(questionnaire_id: Union[str, UUID], layout: dict) -> str:
-    """
-    Guarda el layout JSON en el storage y devuelve la ruta escrita.
-    """
-    path = get_layout_storage_path(questionnaire_id)
-    data = json.dumps(layout, ensure_ascii=False, indent=2).encode("utf-8")
-    if default_storage.exists(path):
-        default_storage.delete(path)
-    default_storage.save(path, ContentFile(data))
-    return path

@@ -29,10 +29,12 @@ class ChoiceRepository(Protocol):
         """Retorna la opción (objeto del modelo/DTO mínimo) o None."""
         ...
 
+
 class ActorRepository(Protocol):
     """Puerto mínimo para validar/consultar actores existentes."""
     def get(self, id: UUID): ...
     def list_by_type(self, tipo: str, *, search: Optional[str] = None, limit: int = 50): ...
+
 
 class AnswerRepository(Protocol):
     """
@@ -48,9 +50,27 @@ class AnswerRepository(Protocol):
     def list_by_submission(self, submission_id: UUID) -> List[Answer]: ...
     def list_by_question(self, question_id: UUID) -> List[Answer]: ...
 
+    # 🔹 Nuevas utilidades (opcionales pero recomendadas para Opción B)
+    def list_by_submission_question(self, *, submission_id: UUID, question_id: UUID) -> List[Answer]: ...
+    """Devuelve solo las respuestas de una pregunta dentro de un submission.
+    Permite optimizar el merge de múltiples proveedores sin traer todo el submission.
+    Si no se implementa, la capa aplicación puede usar list_by_submission(...) y filtrar en memoria.
+    """
+
+    def save_many(self, answers: List[Answer]) -> List[Answer]: ...
+    """Guarda en lote. La implementación puede hacer bulk_create/bulk_update o fallback a save() en bucle.
+    La capa de aplicación puede prescindir de este método si no está disponible.
+    """
+
     # Operaciones específicas del flujo
     def clear_for_question(self, *, submission_id: UUID, question_id: UUID) -> int: ...
+    """Elimina respuestas de ESA pregunta dentro del submission.
+    OJO: El caso de uso 'save_and_advance' NO debe llamar esto para la pregunta 'proveedor'.
+    """
+
     def delete_after_question(self, *, submission_id: UUID, question_id: UUID) -> int: ...
+    """Elimina respuestas de preguntas posteriores (navegación lineal).
+    """
 
 
 class SubmissionRepository(Protocol):

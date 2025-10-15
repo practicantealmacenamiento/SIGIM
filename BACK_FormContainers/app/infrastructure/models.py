@@ -1,5 +1,5 @@
 from django.db import models
-from django.contrib.auth.models import User
+from django.contrib.auth.models import User  # lo conservo por compat en otras tablas
 from django.db.models import Q
 import uuid
 
@@ -215,21 +215,33 @@ class Choice(models.Model):
 # Respuestas
 # -----------------------------
 class Answer(models.Model):
-    """Respuesta a una pregunta: texto, opción y/o archivo."""
+    """
+    Respuesta a una pregunta (esquema original).
+
+    Mantiene compatibilidad con migraciones iniciales:
+      - answer_file (FileField)
+      - timestamp (auto_now_add)
+      - user (FK a AUTH_USER)
+      - ocr_meta y meta (JSON)
+    """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     submission = models.ForeignKey("Submission", on_delete=models.CASCADE, related_name="answers")
     question = models.ForeignKey("Question", on_delete=models.CASCADE)
-    user = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
 
+    # contenido
     answer_text = models.TextField(null=True, blank=True)
     answer_choice = models.ForeignKey("Choice", null=True, blank=True, on_delete=models.SET_NULL)
     answer_file = models.FileField(upload_to="uploads/%Y/%m/%d/", null=True, blank=True)
 
-    # Metadatos útiles (p. ej., resultado de OCR, proveedor, confianza, bounding boxes)
+    # metadatos libres
     ocr_meta = models.JSONField(default=dict, blank=True)
     meta = models.JSONField(default=dict, blank=True)
 
+    # tiempos
     timestamp = models.DateTimeField(auto_now_add=True)
+
+    # auditoría opcional
+    user = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
 
     class Meta:
         db_table = "answer"
@@ -237,13 +249,6 @@ class Answer(models.Model):
         indexes = [
             models.Index(fields=["submission", "question"]),
             models.Index(fields=["timestamp"]),
-        ]
-        constraints = [
-            # Debe existir al menos un valor (texto, opción o archivo)
-            models.CheckConstraint(
-                check=Q(answer_text__isnull=False) | Q(answer_choice__isnull=False) | Q(answer_file__isnull=False),
-                name="answer_has_some_value",
-            ),
         ]
 
     def __str__(self):
@@ -254,3 +259,4 @@ class Answer(models.Model):
         if self.answer_file:
             self.answer_file.delete(save=False)
         super().delete(*args, **kwargs)
+

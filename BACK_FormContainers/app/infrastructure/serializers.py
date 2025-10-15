@@ -1,6 +1,7 @@
 from __future__ import annotations
+import json
 
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List
 from uuid import UUID
 from urllib.parse import urljoin
 
@@ -308,18 +309,35 @@ class AnswerReadSerializer(serializers.Serializer):
     question = serializers.SerializerMethodField()
     answer_choice = serializers.SerializerMethodField()
     answer_file = serializers.SerializerMethodField()
-
-    # Campos aplanados útiles para la UI/búsqueda (compatibilidad)
     question_text = serializers.SerializerMethodField()
     question_type = serializers.SerializerMethodField()
     question_tag = serializers.SerializerMethodField()
 
+    # NUEVO: exponer meta (y ocr_meta si existe)
+    meta = serializers.SerializerMethodField()
+    ocr_meta = serializers.SerializerMethodField()
+
+    # -------- helpers internos --------
+    def _get_field_value(self, obj, field, default=None):
+        if hasattr(obj, field):
+            return getattr(obj, field)
+        # model relations (django) a->id
+        if field.endswith('_id') and hasattr(obj, field[:-3]):
+            rel = getattr(obj, field[:-3])
+            return getattr(rel, 'id', default)
+        # entity dict-like
+        if isinstance(obj, dict):
+            return obj.get(field, default)
+        return default
+
+    def _get_file_path(self, obj):
+        f = self._get_field_value(obj, 'answer_file')
+        if f and hasattr(f, 'name'):
+            return f.name
+        return None
+
+    # -------- representación --------
     def to_representation(self, instance):
-        """
-        Convierte el objeto (modelo o entidad) a representación JSON.
-        Maneja tanto modelos Django como entidades de dominio.
-        """
-        # Extraer datos básicos independientemente del tipo de objeto
         data = {
             'id': self._get_field_value(instance, 'id'),
             'submission_id': self._get_field_value(instance, 'submission_id'),
@@ -329,9 +347,11 @@ class AnswerReadSerializer(serializers.Serializer):
             'answer_choice_id': self._get_field_value(instance, 'answer_choice_id'),
             'answer_file_path': self._get_field_value(instance, 'answer_file_path') or self._get_file_path(instance),
             'timestamp': self._get_field_value(instance, 'timestamp'),
+            # meta/ocr_meta ahora visibles
+            'meta': self.get_meta(instance),
+            'ocr_meta': self.get_ocr_meta(instance),
         }
 
-        # Agregar campos enriquecidos
         data.update({
             'question': self.get_question(instance),
             'answer_choice': self.get_answer_choice(instance),
@@ -340,105 +360,68 @@ class AnswerReadSerializer(serializers.Serializer):
             'question_type': self.get_question_type(instance),
             'question_tag': self.get_question_tag(instance),
         })
-
         return data
 
-    def _get_field_value(self, obj, field_name, default=None):
-        """Extrae valor de campo de manera segura."""
-        try:
-            return getattr(obj, field_name, default)
-        except Exception:
-            return default
-
-    def _get_file_path(self, obj):
-        """Extrae ruta de archivo desde diferentes fuentes."""
-        # Para modelos Django con FileField
-        answer_file = self._get_field_value(obj, 'answer_file')
-        if answer_file and hasattr(answer_file, 'name'):
-            return answer_file.name
-        return None
-
+    # -------- métodos enriquecidos existentes --------
     def get_question(self, obj):
-        """Retorna información de la pregunta asociada."""
-        question = self._get_field_value(obj, "question")
-        if not question:
-            # Si no hay relación cargada, usar datos del contexto o crear estructura básica
-            question_id = self._get_field_value(obj, "question_id")
-            question_data = self.context.get('questions_data', {}).get(str(question_id), {})
+        q = self._get_field_value(obj, 'question')
+        if q:
             return {
-                "id": str(question_id) if question_id else None,
-                "text": question_data.get('text', ''),
-                "type": question_data.get('type', ''),
-                "semantic_tag": question_data.get('semantic_tag'),
+                "id": str(getattr(q, "id", None)),
+                "text": getattr(q, "text", ""),
+                "type": getattr(q, "type", ""),
+                "semantic_tag": getattr(q, "semantic_tag", None),
             }
-        
-        # Compatibilidad: algunos modelos usan "label"
-        text = getattr(question, "text", None) or getattr(question, "label", None)
+        # fallback con datos del contexto (si los tienes cacheados)
+        qid = self._get_field_value(obj, 'question_id')
+        if not qid:
+            return None
+        qdata = self.context.get('questions_data', {}).get(str(qid), {})
         return {
-            "id": str(getattr(question, "id")),
-            "text": text,
-            "type": getattr(question, "type", None),
-            "semantic_tag": getattr(question, "semantic_tag", None),
+            "id": str(qid),
+            "text": qdata.get('text', ''),
+            "type": qdata.get('type', ''),
+            "semantic_tag": qdata.get('semantic_tag'),
         }
 
     def get_answer_choice(self, obj):
-        """Retorna información de la opción de respuesta seleccionada."""
         choice = self._get_field_value(obj, "answer_choice")
         if not choice:
-            # Si no hay relación cargada, usar datos del contexto
-            choice_id = self._get_field_value(obj, "answer_choice_id")
-            if not choice_id:
+            cid = self._get_field_value(obj, "answer_choice_id")
+            if not cid:
                 return None
-            
-            choice_data = self.context.get('choices_data', {}).get(str(choice_id), {})
-            return {
-                "id": str(choice_id),
-                "text": choice_data.get('text', ''),
-            }
-        
-        # El front espera "text" (no "label")
-        text = getattr(choice, "text", None) or getattr(choice, "label", None) or getattr(choice, "name", None)
-        return {"id": str(getattr(choice, "id")), "text": text}
+            cdata = self.context.get('choices_data', {}).get(str(cid), {})
+            return {"id": str(cid), "text": cdata.get('text', '')}
+        return {"id": str(getattr(choice, "id", None)), "text": getattr(choice, "text", "")}
 
     def get_answer_file(self, obj):
-        """Genera URL segura para el archivo de respuesta."""
-        # Primero intentar obtener desde answer_file_path (entidades)
-        file_path = self._get_field_value(obj, 'answer_file_path')
-        
-        # Si no existe, intentar desde answer_file (modelos Django)
-        if not file_path:
-            answer_file = self._get_field_value(obj, "answer_file")
-            if answer_file and hasattr(answer_file, 'name'):
-                file_path = answer_file.name
-        
-        if not file_path:
-            return None
-        
-        # Generar URL segura con autenticación
-        try:
-            from app.infrastructure.storage import get_secure_media_url
-            return get_secure_media_url(file_path)
-        except Exception:
-            # Fallback: generar URL relativa para media protegida
-            request = self.context.get('request')
-            if request:
-                return f"/api/media/{file_path}"
-            return file_path
+        p = self._get_field_value(obj, 'answer_file_path')
+        if p:
+            return p
+        return self._get_file_path(obj)
 
     def get_question_text(self, obj):
-        """Retorna el texto de la pregunta (campo aplanado)."""
-        question_info = self.get_question(obj)
-        return question_info.get('text', '') if question_info else ''
+        info = self.get_question(obj)
+        return info.get('text', '') if info else ''
 
     def get_question_type(self, obj):
-        """Retorna el tipo de la pregunta (campo aplanado)."""
-        question_info = self.get_question(obj)
-        return question_info.get('type', '') if question_info else ''
+        info = self.get_question(obj)
+        return info.get('type', '') if info else ''
 
     def get_question_tag(self, obj):
-        """Retorna el semantic_tag de la pregunta (campo aplanado)."""
-        question_info = self.get_question(obj)
-        return question_info.get('semantic_tag') if question_info else None
+        info = self.get_question(obj)
+        return info.get('semantic_tag') if info else None
+
+    # -------- NUEVO: meta / ocr_meta --------
+    def get_meta(self, obj):
+        m = self._get_field_value(obj, 'meta') or {}
+        return m if isinstance(m, dict) else {}
+
+    def get_ocr_meta(self, obj):
+        # si guardas OCR dentro de meta["ocr_meta"], lo exponemos plano
+        m = self.get_meta(obj)
+        om = m.get('ocr_meta')
+        return om if isinstance(om, dict) else None
 
 
 # ----------------------------------------------------------------------
@@ -492,6 +475,9 @@ class AnswerWriteSerializer(serializers.Serializer):
         
         if attrs.get("meta") and not isinstance(attrs["meta"], dict):
             raise serializers.ValidationError({"meta": ["Debe ser un diccionario válido."]})
+
+        # ✅ CAMBIO: activa validación de archivos declarados
+        self._validate_files(attrs)
 
         return attrs
 
@@ -799,6 +785,10 @@ class SaveAndAdvanceInputSerializer(serializers.Serializer):
     """
     Serializer manual para el caso de uso Save and Advance.
     No depende de modelos Django y delega validaciones de dominio a servicios.
+
+    Soporta el caso especial PROVEEDOR sin tablas:
+    - El frontend puede enviar `proveedores: list[dict]`
+      o `answer_text` como string JSON con una lista de proveedores.
     """
     submission_id = serializers.UUIDField()
     question_id = serializers.UUIDField()
@@ -807,45 +797,46 @@ class SaveAndAdvanceInputSerializer(serializers.Serializer):
     answer_text = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     answer_choice_id = serializers.UUIDField(required=False, allow_null=True)
 
-    # Soporte para múltiples archivos
+    # Soporte para múltiples archivos (0..2 típicamente)
     answer_file = serializers.FileField(required=False, allow_null=True)
     answer_file_extra = serializers.FileField(required=False, allow_null=True)
 
     # Soporte nativo para preguntas de actor
     actor_id = serializers.UUIDField(required=False, allow_null=True)
 
+    # Control de navegación (mantiene compat con tus views)
     force_truncate_future = serializers.BooleanField(required=False, default=True)
 
-    def validate(self, attrs):
-        """
-        Normaliza y valida la carga útil:
-        - Acepta texto u opción o archivos (con varios nombres de campo).
-        - Deja prearmado un arreglo `_uploads` para la capa de aplicación.
-        """
-        request = self.context.get("request")
+    # PROVEEDOR (lista completa, sin grids)
+    proveedores = serializers.ListField(
+        child=serializers.DictField(), required=False, allow_empty=True
+    )
 
-        # 1) Texto (trimea y vacíos -> None)
-        txt = attrs.get("answer_text")
-        if isinstance(txt, str):
-            txt = txt.strip()
-        attrs["answer_text"] = txt or None
+    # ----------------------------
+    # Normalización / Validaciones
+    # ----------------------------
+    def _coerce_uuid(self, val: Any) -> Optional[str]:
+        """Intenta convertir un valor a UUID (string), o retorna None."""
+        if val in (None, "", "null"):
+            return None
+        try:
+            # Reutilizamos el validador/normalizador propio de DRF
+            return serializers.UUIDField().to_internal_value(str(val))
+        except Exception:
+            return None
 
-        # 2) Choice: permite alias "choice_id" por compatibilidad
-        if not attrs.get("answer_choice_id"):
-            cid = self.initial_data.get("choice_id") or self.initial_data.get("answer_choice")
-            if cid:
-                attrs["answer_choice_id"] = cid
+    def _gather_uploads(self, attrs: Dict[str, Any]) -> List[Any]:
+        """Recoge archivos de FileFields declarados y alias en request.FILES."""
+        files: List[Any] = []
 
-        # 3) Archivos: aceptar varios nombres de campo (frontend/legacy)
-        files = []
-
-        # Si DRF ya parseó FileFields declarados:
+        # 1) Los FileField declarados quedan en attrs
         for key in ("answer_file", "answer_file_extra"):
             f = attrs.get(key)
             if f:
                 files.append(f)
 
-        # Además mirar request.FILES por alias comunes
+        # 2) Alias legacy en request.FILES
+        request = self.context.get("request")
         if request is not None and hasattr(request, "FILES"):
             for key in (
                 "answer_file", "answer_file_extra", "answer_files",
@@ -854,15 +845,112 @@ class SaveAndAdvanceInputSerializer(serializers.Serializer):
                 if key in request.FILES:
                     files.extend(request.FILES.getlist(key))
 
-        # Guardar para la view/capa de aplicación
-        attrs["_uploads"] = files
+        return files
 
-        # 4) Regla mínima: debe venir texto u opción o al menos un archivo
-        if not (attrs.get("answer_text") or attrs.get("answer_choice_id") or files):
-            from rest_framework.exceptions import ValidationError
-            raise ValidationError({
-                "answer": "La respuesta debe contener texto, una opción o un archivo."
+    def _parse_proveedores_from_text(self, txt: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+        """
+        Si answer_text viene con un JSON de lista, lo parsea y retorna la lista.
+        Si no aplica, retorna None (no error).
+        """
+        if not txt:
+            return None
+        try:
+            parsed = json.loads(txt)
+        except Exception:
+            return None
+        if isinstance(parsed, list):
+            # Aseguramos que sea lista de dicts; lo demás lo valida el servicio
+            cleaned: List[Dict[str, Any]] = []
+            for it in parsed:
+                if isinstance(it, dict):
+                    cleaned.append(it)
+            return cleaned
+        return None
+
+    def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normaliza y valida la carga útil:
+        - Texto: trim y vacíos -> None
+        - Choice: acepta alias 'choice_id'/'answer_choice'
+        - Archivos: arma `_uploads` (lista)
+        - PROVEEDOR: acepta `proveedores` o `answer_text` como JSON-list
+        - Regla mínima: debe venir (texto | opción | archivos | proveedores)
+        """
+        initial = self.initial_data or {}
+        request = self.context.get("request")
+
+        # 1) Texto (trim)
+        txt = attrs.get("answer_text")
+        if isinstance(txt, str):
+            txt = txt.strip()
+        attrs["answer_text"] = txt or None
+
+        # 2) Choice con alias (si no llegó ya como UUID válido)
+        if not attrs.get("answer_choice_id"):
+            alias = initial.get("choice_id") or initial.get("answer_choice")
+            coerced = self._coerce_uuid(alias)
+            if coerced:
+                attrs["answer_choice_id"] = coerced
+
+        # 3) Archivos → _uploads
+        uploads = self._gather_uploads(attrs)
+        attrs["_uploads"] = uploads
+
+        # 4) PROVEEDOR: prioriza campo estructurado; si no, intenta parsear desde answer_text (JSON-list)
+        provs = attrs.get("proveedores", UNSET := object())
+        if provs is UNSET:  # no venía en attrs (no declarado), revisamos initial/compat
+            if "proveedores" in initial:
+                # DRF no lo mapeó (p.ej. front manda string JSON en 'proveedores')
+                raw = initial.get("proveedores")
+                parsed = None
+                if isinstance(raw, str):
+                    try:
+                        parsed = json.loads(raw)
+                    except Exception:
+                        parsed = None
+                elif isinstance(raw, list):
+                    parsed = raw
+                if isinstance(parsed, list):
+                    provs = [it for it in parsed if isinstance(it, dict)]
+        # Si aún no tenemos provs, intentamos desde answer_text JSON
+        if provs is UNSET or provs is None:
+            maybe = self._parse_proveedores_from_text(attrs.get("answer_text"))
+            if maybe:
+                provs = maybe
+
+        # Si logramos obtener lista válida, la establecemos
+        if provs is not UNSET and provs is not None:
+            # Aseguramos que sea lista (aunque esté vacía)
+            if not isinstance(provs, list):
+                raise serializers.ValidationError({"proveedores": "Debe ser una lista."})
+            # (Validaciones de contenido específico se dejan al servicio)
+            attrs["proveedores"] = provs
+
+            # Importante: cuando usamos proveedores, normalmente no queremos que
+            # answer_text se considere “contenido” aparte.
+            # Lo dejamos tal cual; la capa de aplicación decide.
+        # else: no hay 'proveedores' en request -> se ignora
+
+        # 5) Regla mínima de contenido:
+        #    Aceptamos cualquiera de: answer_text | answer_choice_id | uploads | proveedores
+        has_text = bool(attrs.get("answer_text"))
+        has_choice = bool(attrs.get("answer_choice_id"))
+        has_files = bool(uploads)
+        has_provs = isinstance(attrs.get("proveedores"), list) and len(attrs["proveedores"]) >= 0  # permite lista vacía
+
+        if not (has_text or has_choice or has_files or has_provs):
+            raise serializers.ValidationError({
+                "answer": "La respuesta debe contener texto, una opción, un archivo o la lista de proveedores."
             })
+
+        # ✅ CAMBIO: valida los archivos juntados (_uploads)
+        for idx, f in enumerate(uploads):
+            field_name = "answer_file" if idx == 0 else "answer_file_extra"
+            self._validate_single_file(f, field_name)
+
+        # 6) Normalizaciones finales opcionales
+        # - actor_id ya está declarado como UUIDField (DRF valida)
+        # - force_truncate_future tiene default=True
 
         return attrs
     
@@ -870,13 +958,18 @@ class SaveAndAdvanceInputSerializer(serializers.Serializer):
         """
         Estructura compacta para crear el comando de aplicación.
         """
+        # ✅ CAMBIO: incluimos todos los campos que consume SaveAndAdvanceCommand
         return {
             "submission_id": self.validated_data["submission_id"],
             "question_id": self.validated_data["question_id"],
+            "user_id": self.validated_data.get("user_id"),
             "answer_text": self.validated_data.get("answer_text"),
             "answer_choice_id": self.validated_data.get("answer_choice_id"),
             "uploads": self.validated_data.get("_uploads", []),
-    }
+            "actor_id": self.validated_data.get("actor_id"),
+            "force_truncate_future": self.validated_data.get("force_truncate_future", True),
+            "proveedores": self.validated_data.get("proveedores"),
+        }
 
     def _validate_uuid_field(self, attrs, field_name):
         """Valida que un campo UUID tenga formato válido."""
@@ -889,7 +982,7 @@ class SaveAndAdvanceInputSerializer(serializers.Serializer):
                 raise serializers.ValidationError({field_name: ["Formato de UUID inválido."]})
 
     def _validate_files(self, attrs):
-        """Valida archivos de entrada."""
+        """Valida archivos de entrada declarados en los FileField del serializer."""
         files = []
         
         if attrs.get("answer_file"):
@@ -1161,64 +1254,3 @@ class HistorialItemSerializer(serializers.Serializer):
             return getattr(obj, field_name, default)
         except Exception:
             return default
-
-class TableCellInputSerializer(serializers.Serializer):
-    question_id = serializers.UUIDField()
-    answer_text = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    answer_choice_id = serializers.UUIDField(required=False, allow_null=True)
-    actor_id = serializers.UUIDField(required=False, allow_null=True)
-    # El archivo se captura por clave dinámica en request.FILES: cells[<i>][file]
-
-class AddTableRowInputSerializer(serializers.Serializer):
-    submission_id = serializers.UUIDField()
-    row_index = serializers.IntegerField(required=False, min_value=1)
-    table_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)  # <— NUEVO
-    cells = TableCellInputSerializer(many=True)
-
-    def validate(self, attrs):
-        # Mapear uploads por índice: cells[0][file], cells[1][file], ...
-        request = self.context.get("request")
-        uploads_by_pos: Dict[int, Any] = {}
-        if request and hasattr(request, "FILES"):
-            for key in request.FILES:
-                # acepta "cells[0][file]" o "cells.0.file"
-                if key.startswith("cells[") and key.endswith("][file]"):
-                    idx = int(key.split("[")[1].split("]")[0])
-                    uploads_by_pos[idx] = request.FILES[key]
-                elif key.startswith("cells.") and key.endswith(".file"):
-                    try:
-                        idx = int(key.split(".")[1])
-                        uploads_by_pos[idx] = request.FILES[key]
-                    except Exception:
-                        pass
-
-        # insertar upload detectado en cada celda
-        for i, cell in enumerate(attrs.get("cells") or []):
-            upload = uploads_by_pos.get(i)
-            if upload is not None:
-                cell["upload"] = upload
-        return attrs
-
-class UpdateTableRowInputSerializer(AddTableRowInputSerializer):
-    row_index = serializers.IntegerField(required=True, min_value=1)
-
-class TableRowOutputSerializer(serializers.Serializer):
-    submission_id = serializers.UUIDField()
-    row_index = serializers.IntegerField()
-    values = serializers.DictField(child=serializers.DictField())
-
-class GridColumnSerializer(serializers.Serializer):
-    question_id = serializers.UUIDField()
-    header = serializers.CharField()
-    column = serializers.CharField()
-    order = serializers.IntegerField()
-    width = serializers.FloatField(required=False, allow_null=True)
-    semantic_tag = serializers.CharField()
-    ui_hint = serializers.CharField(required=False, allow_blank=True)
-
-class GridDefinitionSerializer(serializers.Serializer):
-    questionnaire_id = serializers.UUIDField()
-    title = serializers.CharField()
-    version = serializers.CharField()
-    timezone = serializers.CharField()
-    columns = GridColumnSerializer(many=True)
