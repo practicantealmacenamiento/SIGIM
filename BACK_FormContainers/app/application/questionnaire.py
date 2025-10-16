@@ -124,8 +124,6 @@ class QuestionnaireService:
                 raise ValidationError(message=f"Recipientes inválidos para proveedor '{nombre}'.", field="answer")
 
             orden_compra = str(row.get("orden_compra", row.get("oc", "") or "")).strip()
-            if not orden_compra:
-                raise ValidationError(message=f"Falta 'orden_compra' para proveedor '{nombre}'.", field="answer")
 
             unidad = self._normalize_unidad(row.get("unidad", ""))
 
