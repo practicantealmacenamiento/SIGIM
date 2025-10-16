@@ -49,17 +49,31 @@ const TIPO_BY_SLUG: Record<string, "PROVEEDOR" | "TRANSPORTISTA" | "RECEPTOR"> =
   receptor: "RECEPTOR",
 };
 
-// helper: evita setState durante el render actual
 const defer = (cb: () => void) => {
   if (typeof queueMicrotask === "function") queueMicrotask(cb);
   else setTimeout(cb, 0);
 };
 
-// lee param de URL (SSR-safe)
 const getQueryParam = (name: string): string | null => {
   if (typeof window === "undefined") return null;
   try { return new URLSearchParams(window.location.search).get(name); } catch { return null; }
 };
+
+// === File helpers ===
+function emptyFileList(): FileList {
+  return new DataTransfer().files;
+}
+function filesToFileList(files: File[]): FileList {
+  const dt = new DataTransfer();
+  files.forEach(f => dt.items.add(f));
+  return dt.files;
+}
+function cloneFileList(fl: FileList | undefined | null): File[] {
+  if (!fl) return [];
+  const arr: File[] = [];
+  for (let i = 0; i < fl.length; i++) arr.push(fl.item(i)!);
+  return arr;
+}
 
 // ISO 6346
 function isValidISO6346(code: string): boolean {
@@ -102,7 +116,7 @@ function parseProviders(raw: string | undefined): ProviderRow[] {
 
 const SKIP_ENABLED_QN_ID = "75105aaa-4ec7-40e4-9334-9f08e89611ae";
 
-// estilos de botón
+// estilos de botón (más sobrios)
 const btnBase = "inline-flex items-center justify-center rounded-lg px-3.5 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-sky-400 disabled:opacity-60 disabled:cursor-not-allowed";
 const btnPrimary = `${btnBase} bg-skyBlue text-white hover:bg-skyBlue/90 dark:hover:bg-skyBlue/80`;
 const btnGhost = `${btnBase} border border-slate-200/70 dark:border-white/15 hover:bg-slate-50 dark:hover:bg-white/5 text-slate-700 dark:text-slate-200`;
@@ -120,7 +134,6 @@ export default function QuestionCard({
   const disabled = !active || sending;
   const busy = sending && active;
 
-  // corrige corte de popovers: sin overflow hidden + z-index alto cuando activa
   const cardZ = active ? "z-30" : "z-10";
 
   const slug = useMemo(() => (q ? tagOf(q) : "none"), [q]);
@@ -142,6 +155,12 @@ export default function QuestionCard({
     return String(a || b || c || d || "");
   }, [q, it]);
   const canShowSkip = idx === 0 && questionnaireId.toLowerCase() === SKIP_ENABLED_QN_ID.toLowerCase();
+
+  // Refs para reemplazo por índice
+  const replaceInputsRef = useRef<Record<number, HTMLInputElement | null>>({});
+  const setReplaceRef = useCallback((k: number) => (el: HTMLInputElement | null) => {
+    replaceInputsRef.current[k] = el;
+  }, []);
 
   // archivos
   const onFilesChangeValidated = useCallback(
@@ -179,6 +198,56 @@ export default function QuestionCard({
     if (!active && !sending) openEditing();
     if (showParentError) setShowParentError(false);
   }, [active, sending, openEditing, showParentError]);
+
+  // === Acciones de edición/archivos ===
+  const clearValue = useCallback(() => {
+    defer(() => setVal(idx, ""));
+  }, [idx, setVal]);
+
+  const clearAllFiles = useCallback(() => {
+    // 1) eliminar previews existentes (si el padre los gestiona individualmente)
+    const n = ((it as any)?.previews?.length ?? 0);
+    if (n > 0) {
+      for (let k = n - 1; k >= 0; k--) removeFile(idx, k);
+    }
+    // 2) forzar state a "sin archivos" aunque el padre ignore null
+    onFilesChange(idx, emptyFileList());
+    // 3) mantener el texto manual en OCR (no lo tocamos), sólo limpiamos imágenes
+  }, [idx, it, onFilesChange, removeFile]);
+
+  const askReplaceAt = useCallback((k: number) => {
+    const input = replaceInputsRef.current[k];
+    if (input) input.click();
+  }, []);
+
+  const onReplaceFileAt = useCallback((k: number, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // reset
+    if (!file) return;
+
+    const err = validateFiles(q, { 0: file, length: 1 } as unknown as FileList);
+    if (err) { setFileError(err); return; }
+
+    const current = cloneFileList((it as any)?.files as FileList | undefined);
+    if (!current.length) {
+      onFilesChange(idx, filesToFileList([file]));
+      return;
+    }
+    const next = current.map((f, i) => (i === k ? file : f));
+    onFilesChange(idx, filesToFileList(next));
+  }, [idx, it, onFilesChange, q]);
+
+  const useManualTextForOCR = useCallback(() => {
+    onFilesChange(idx, emptyFileList());
+    const n = ((it as any)?.previews?.length ?? 0);
+    if (n > 0) for (let k = n - 1; k >= 0; k--) removeFile(idx, k);
+    defer(() => submitOne(idx)); // guarda texto manual actual
+  }, [idx, it, onFilesChange, removeFile, submitOne]);
+
+  const wipeAnswer = useCallback(() => {
+    clearAllFiles();
+    clearValue();
+  }, [clearAllFiles, clearValue]);
 
   // proveedores (multi)
   const [rows, setRows] = useState<ProviderRow[]>(
@@ -227,7 +296,6 @@ export default function QuestionCard({
     for (const p of list) {
       if (!p.nombre) return "Falta el nombre del proveedor.";
       if (p.estibas == null || Number.isNaN(Number(p.estibas)) || Number(p.estibas) < 0) return `Estibas inválidas para ${p.nombre}.`;
-      if (!p.orden_compra || !String(p.orden_compra).trim()) return `Orden de compra requerida para ${p.nombre}.`;
       if (p.recipientes == null || Number.isNaN(Number(p.recipientes)) || Number(p.recipientes) < 0) return `Recipientes inválidos para ${p.nombre}.`;
       if (p.unidad !== "KG" && p.unidad !== "UN") return `Selecciona unidad (Kg o Un) para ${p.nombre}.`;
     }
@@ -295,7 +363,8 @@ export default function QuestionCard({
 
   // Badge ISO 6346 (solo contenedor)
   const isoBadge = useMemo(() => {
-    if (slug !== "contenedor") return null;
+    const slugNow = slug;
+    if (slugNow !== "contenedor") return null;
     const raw: any = (it as any)?.ocr;
     const current = (typeof it.value === "string" && it.value.trim()) ? String(it.value).toUpperCase() : "";
     const code = current || (raw && typeof raw !== "string" ? (raw.contenedor as string) : "");
@@ -306,7 +375,7 @@ export default function QuestionCard({
       ? `${base} border-emerald-500/30 text-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 dark:text-emerald-300`
       : `${base} border-amber-500/30 text-amber-700 bg-amber-50 dark:bg-amber-900/20 dark:text-amber-300`;
     return (
-      <div className="mt-2" aria-live="polite">
+      <div className="mt-3" aria-live="polite">
         <span className={cls}>
           <span aria-hidden className="text-base leading-none">{ok ? "✓" : "✗"}</span>
           <span className="whitespace-nowrap">{code} · {ok ? "ISO válida" : "ISO inválida"}</span>
@@ -315,17 +384,19 @@ export default function QuestionCard({
     );
   }, [it, slug]);
 
+  const hasPreviews = Array.isArray((it as any)?.previews) && (it as any).previews.length > 0;
+
   return (
     <section
       ref={isLast ? lastRef : null}
       aria-labelledby={`q-${q.id}-label`}
       aria-busy={busy}
       className={[
-        "relative isolate",           // <-- importantísimo para stacking context correcto
+        "relative isolate",
         "rounded-2xl border bg-white dark:bg-slate-800 ring-1 ring-slate-200 dark:ring-white/10",
         "shadow-sm hover:shadow-md focus-within:shadow-md transition-shadow duration-200",
         "px-6 md:px-8 py-7 md:py-8 mb-6",
-        "overflow-visible",           // <-- evita cortar dropdowns
+        "overflow-visible",
         cardZ
       ].join(" ")}
       data-qid={q.id}
@@ -353,23 +424,60 @@ export default function QuestionCard({
         </div>
 
         <div className="flex-1 min-w-0">
+          {/* Header compacto */}
           <header className="flex items-start justify-between gap-4">
-            <h3 id={`q-${q.id}-label`} className="text-xl md:text-2xl font-semibold leading-snug text-slate-900 dark:text-white">
-              {q.text}
-              {q.required && (
-                <span className="ml-2 align-middle text-red-500 text-sm" title="Respuesta obligatoria" aria-label="Respuesta obligatoria">*</span>
+            <div>
+              <h3 id={`q-${q.id}-label`} className="text-xl md:text-2xl font-semibold leading-snug text-slate-900 dark:text-white">
+                {q.text}
+                {q.required && (
+                  <span className="ml-2 align-middle text-red-500 text-sm" title="Respuesta obligatoria" aria-label="Respuesta obligatoria">*</span>
+                )}
+              </h3>
+              {it.saved && !it.editing && (
+                <div className="mt-1 inline-flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-400">
+                  <span aria-hidden>✓</span> Guardada
+                </div>
               )}
-            </h3>
-            {it.saved && !it.editing && (
-              <span className="inline-flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-400">
-                <span aria-hidden>✓</span> Guardada
-              </span>
-            )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Menú de acciones (contextual) */}
+              {!isCatalog && q.type === "file" && (
+                <div className="relative">
+                  <details className="group">
+                    <summary className={`${btnGhost} list-none cursor-pointer`}>Acciones</summary>
+                    <div className="absolute right-0 mt-2 w-56 rounded-xl border bg-white shadow-lg p-1.5 z-50 dark:bg-slate-900 dark:border-white/10">
+                      {isOcr(q) && (
+                        <>
+                          <button type="button" onClick={() => retryOCR(idx)} disabled={sending} className="w-full text-left px-3 py-2 rounded-md hover:bg-slate-50 dark:hover:bg-white/5">Reintentar OCR</button>
+                          <button type="button" onClick={useManualTextForOCR} disabled={sending} className="w-full text-left px-3 py-2 rounded-md hover:bg-slate-50 dark:hover:bg-white/5">Usar texto manual</button>
+                        </>
+                      )}
+                      {hasPreviews && (
+                        <button type="button" onClick={clearAllFiles} disabled={sending} className="w-full text-left px-3 py-2 rounded-md hover:bg-slate-50 dark:hover:bg-white/5">Quitar imagen{(it as any)?.previews?.length > 1 ? "es" : ""}</button>
+                      )}
+                      <button type="button" onClick={wipeAnswer} disabled={sending} className="w-full text-left px-3 py-2 rounded-md hover:bg-slate-50 dark:hover:bg-white/5">Borrar respuesta</button>
+                    </div>
+                  </details>
+                </div>
+              )}
+
+              {/* Editar / Guardar */}
+              {!active ? (
+                <button type="button" onClick={openEditing} disabled={sending} className={btnGhost} title="Editar">
+                  Editar
+                </button>
+              ) : (
+                <button type="button" onClick={() => defer(() => submitOne(idx))} disabled={sending} className={btnPrimary} title="Guardar">
+                  Guardar
+                </button>
+              )}
+            </div>
           </header>
 
           {/* Error del padre */}
           {errorMsg && showParentError && active && (
-            <div className="mt-3 mb-4 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2" role="alert" aria-live="assertive">
+            <div className="mt-4 mb-5 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2" role="alert" aria-live="assertive">
               <span className="mt-0.5">⚠️</span>
               <div className="flex-1">{errorMsg}</div>
               <button type="button" onClick={() => setShowParentError(false)} className="ml-2 px-2 py-1 rounded hover:bg-amber-100 text-amber-900" aria-label="Ocultar mensaje de error">✕</button>
@@ -381,7 +489,7 @@ export default function QuestionCard({
             <div onClickCapture={activateOnInteract} onFocusCapture={activateOnInteract} className="space-y-4">
               {isProveedor ? (
                 <>
-                  <div className="relative z-40"> {/* eleva el dropdown del autocompletar */}
+                  <div className="relative z-40">
                     <ActorInput
                       tipo={TIPO_BY_SLUG[slug]}
                       defaultValue=""
@@ -535,9 +643,10 @@ export default function QuestionCard({
                 aria-describedby={fileError ? fileErrorId : undefined}
               />
 
+              {/* ⬇️ eliminado el grid duplicado de previews para OCR */}
               {tagOf(q) === "placa" && (
                 <>
-                  <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                  <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">
                     Puedes <strong>escribir la placa manualmente</strong> o subir una imagen para OCR. La imagen no es obligatoria.
                   </p>
                   <div className="mt-3">
@@ -560,7 +669,26 @@ export default function QuestionCard({
                 onRemove={(k) => removeFile(idx, k)}
                 onSubmit={() => defer(() => submitOne(idx))}
                 aria-describedby={fileError ? fileErrorId : undefined}
+                /* El grid de previews vive dentro de FileInputMulti */
               />
+              {hasPreviews && (
+                <div className="mt-2 flex gap-2">
+                  {/* Reemplazo rápido del primer archivo (ejemplo minimal) */}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    ref={setReplaceRef(0)}
+                    onChange={(e) => onReplaceFileAt(0, e)}
+                  />
+                  <button type="button" onClick={() => askReplaceAt(0)} className={btnGhost} disabled={sending}>
+                    Cambiar primera imagen
+                  </button>
+                  <button type="button" onClick={clearAllFiles} className={btnGhost} disabled={sending}>
+                    Quitar todas
+                  </button>
+                </div>
+              )}
               {fileError && (
                 <p id={fileErrorId} className="mt-2 text-sm text-red-600 dark:text-red-400" role="alert" aria-live="assertive">
                   {fileError}
@@ -571,7 +699,7 @@ export default function QuestionCard({
 
           {/* Omitir (solo QN permitido) */}
           {canShowSkip && (
-            <div className="mt-5 flex flex-wrap items-center gap-3">
+            <div className="mt-6 flex flex-wrap items-center gap-3">
               <label className="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
                 <input
                   type="checkbox"
@@ -596,7 +724,7 @@ export default function QuestionCard({
             </div>
           )}
 
-          {/* Acciones */}
+          {/* Footer compacto */}
           <div className="mt-6 flex flex-wrap items-center gap-3 md:gap-4">
             {it.saved && it.editing && !isCatalog && (
               <button type="button" className="text-sm text-skyBlue underline underline-offset-4 hover:text-skyBlue/80 transition" onClick={() => defer(() => submitOne(idx))} disabled={sending}>
