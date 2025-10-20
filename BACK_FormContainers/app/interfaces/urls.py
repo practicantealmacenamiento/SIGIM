@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 from django.urls import path, include, re_path
 from rest_framework.routers import DefaultRouter
 
-# Vistas públicas/autenticadas (negocio + auth unificada)
+# ——— Vistas públicas/autenticadas (negocio + auth unificada)
 from app.interfaces.views import (
     # Auth unificada
     UnifiedLoginAPIView,
@@ -20,19 +22,28 @@ from app.interfaces.views import (
     QuestionDetailAPIView,
 )
 
-# Vistas de administración (CRUDs internos)
+# ——— Vistas de administración (CRUDs internos)
 from app.interfaces.admin_views import (
     AdminQuestionnaireViewSet,
     AdminUserViewSet,
     AdminActorViewSet,
 )
 
+# ——— Schema & Docs (drf-spectacular)
+from drf_spectacular.views import (
+    SpectacularAPIView,
+    SpectacularSwaggerView,
+    SpectacularRedocView,
+)
+
+# Prefijo versionado único para toda la API
 API_PREFIX = "api/v1/"
 
+# Router con barra final opcional para evitar 301/308
 router = DefaultRouter()
-router.trailing_slash = r'/?'  # evita 301/308 por barra final
+router.trailing_slash = r'/?'
 
-# ======== RUTAS ADMIN (solo staff, permisos en los viewsets) ========
+# ======== RUTAS ADMIN (solo staff; permisos en los viewsets) ========
 router.register(r'management/questionnaires', AdminQuestionnaireViewSet, basename='questionnaires')
 router.register(r'management/users', AdminUserViewSet, basename='users')
 router.register(r'management/actors', AdminActorViewSet, basename='admin-actors')
@@ -42,7 +53,7 @@ router.register(r'catalogos/actores', ActorViewSet, basename='actors')
 router.register(r'submissions', SubmissionViewSet, basename='submissions')
 
 urlpatterns = [
-    # Router bajo prefijo versionado
+    # ——— Router bajo prefijo versionado
     path(API_PREFIX, include(router.urls)),
 
     # ======== AUTH UNIFICADA ========
@@ -62,7 +73,10 @@ urlpatterns = [
     path(f'{API_PREFIX}submissions/<uuid:pk>/enriched/', SubmissionViewSet.as_view({'get': 'enriched_detail'}), name='submission-enriched'),
 
     # ======== MEDIA PROTEGIDO ========
+    # Ruta canónica
     path(f'{API_PREFIX}secure-media/<path:file_path>/', MediaProtectedAPIView.as_view(), name='secure-media'),
+    # Alias retrocompatible: /api/media/... (utilizado por algunos serializers del frontend)
+    re_path(rf'^{API_PREFIX}media/(?P<file_path>.+)$', MediaProtectedAPIView.as_view(), name='media-alias'),
 
     # ======== HISTORIAL ========
     re_path(rf'^{API_PREFIX}historial/reguladores/?$', HistorialReguladoresAPIView.as_view(), name='historial-reguladores'),
@@ -72,4 +86,10 @@ urlpatterns = [
 
     # ======== PREGUNTA DETALLE ========
     re_path(rf'^{API_PREFIX}questions/(?P<id>[0-9a-f-]+)/?$', QuestionDetailAPIView.as_view(), name='question-detail'),
+
+    # ======== SCHEMA & DOCS (drf-spectacular) ========
+    path(f'{API_PREFIX}schema/', SpectacularAPIView.as_view(), name='schema'),
+    path(f'{API_PREFIX}docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+    path(f'{API_PREFIX}redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
 ]
+

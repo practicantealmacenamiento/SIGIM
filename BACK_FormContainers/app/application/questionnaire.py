@@ -1,16 +1,39 @@
+# -*- coding: utf-8 -*-
+"""
+Caso de uso principal del flujo de formulario (Guardar y Avanzar).
+
+Responsabilidades:
+- Validar existencia de `Submission` y `Question`.
+- Aplicar reglas de adjuntos por tipo de pregunta.
+- Guardar respuesta:
+    * Rama clásica (texto / choice / 1 archivo) con limpieza selectiva.
+    * Rama proveedor (Opción B): merge de filas (sin limpiar la pregunta).
+- Resolver la siguiente pregunta (ramas por `branch_to` o navegación lineal).
+- Emitir efectos derivados (updates de submission y contadores).
+
+Notas:
+- No introduce dependencias de infraestructura; usa puertos/repositorios.
+- No mover reglas de dominio aquí; este módulo orquesta casos de uso.
+"""
+
 from __future__ import annotations
 
-from uuid import UUID
-from dataclasses import replace
+# ── Stdlib ─────────────────────────────────────────────────────────────────────
 import json
+from dataclasses import replace
+from uuid import UUID
+from typing import Optional, List, Dict, Any
 
+# ── Application ────────────────────────────────────────────────────────────────
 from app.application.commands import SaveAndAdvanceCommand, SaveAndAdvanceResult
+
+# ── Dominio ────────────────────────────────────────────────────────────────────
+from app.domain.entities import Answer as DAnswer
 from app.domain.exceptions import (
     ValidationError,
     EntityNotFoundError,
     BusinessRuleViolationError,
 )
-from app.domain.entities import Answer as DAnswer
 from app.domain.repositories import (
     AnswerRepository,
     SubmissionRepository,
@@ -20,18 +43,21 @@ from app.domain.repositories import (
 from app.domain.ports import FileStorage
 
 
+__all__ = ["QuestionnaireService"]
+
+
 class QuestionnaireService:
     """
-    Caso de uso principal del flujo de formulario (Guardar y Avanzar).
+    Servicio de aplicación que implementa el caso de uso “Guardar y Avanzar”.
 
-    Reglas de adjuntos (en capa de aplicación):
-      - type == "file"  -> acepta archivos.
-      - file_mode in {"image_ocr", "ocr_only"} -> máx 1 archivo.
-      - otros/None -> máx 2 archivos (alineado a tu UI).
+    Reglas de adjuntos (a nivel aplicación):
+      - type == "file"  → acepta archivos.
+      - file_mode in {"image_ocr", "ocr_only"} → máx 1 archivo.
+      - otros/None → máx 2 archivos (alineado a la UI).
 
     Opción B (sin campos tabulares en Question):
-      - Para PROVEEDOR guardamos N Answers (una por proveedor) y NUNCA limpiamos la pregunta.
-      - Hacemos merge por clave (nombre + orden_compra) para no duplicar ni pisar históricos
+      - Para PROVEEDOR guardamos N `Answer` (una por proveedor) y **no** limpiamos la pregunta.
+      - Merge por clave (nombre + orden_compra) para no duplicar ni pisar históricos
         dentro del mismo submission/pregunta.
     """
 
@@ -43,15 +69,24 @@ class QuestionnaireService:
         question_repo: QuestionRepository,
         choice_repo: ChoiceRepository,
         storage: FileStorage,
-    ):
+    ) -> None:
         self.answer_repo = answer_repo
         self.submission_repo = submission_repo
         self.question_repo = question_repo
         self.choice_repo = choice_repo
         self.storage = storage
 
-    # ======= Soporte: obtener primera pregunta =======
+    # ==========================================================================
+    #   Utilidades públicas
+    # ==========================================================================
+
     def get_first_question(self, questionnaire_id: UUID):
+        """
+        Retorna la primera pregunta del cuestionario (según orden natural de repo).
+
+        Raises:
+            EntityNotFoundError: si no hay `questionnaire_id` o no tiene preguntas.
+        """
         if not questionnaire_id:
             raise EntityNotFoundError(
                 message="Debes indicar un questionnaire_id",
@@ -67,10 +102,15 @@ class QuestionnaireService:
                 entity_id=str(questionnaire_id),
             )
         return questions[0]
-    # =================================================
 
-    # ---------- Normalizaciones/parse ----------
+    # ==========================================================================
+    #   Normalizaciones/parse (uso interno)
+    # ==========================================================================
+
     def _normalize_unidad(self, raw: str) -> str:
+        """
+        Normaliza abreviaturas de unidades para proveedores.
+        """
         s = (raw or "").strip().upper()
         if s in {"KG", "KGS", "KILOS", "KILOGRAMOS"}:
             return "KG"
@@ -78,11 +118,17 @@ class QuestionnaireService:
             return "UN"
         return ""
 
-    def _parse_proveedor_rows(self, payload: str) -> list[dict]:
+    def _parse_proveedor_rows(self, payload: str) -> List[Dict[str, Any]]:
         """
-        Espera JSON: [{"nombre": str, "estibas": int|null, "orden_compra": str,
-                       "recipientes": int|null, "unidad": "KG"|"UN"|""}, ...]
-        Devuelve lista normalizada y validada (sin duplicados por 'nombre').
+        Espera JSON:
+            [{"nombre": str, "estibas": int|null, "orden_compra": str,
+              "recipientes": int|null, "unidad": "KG"|"UN"|""}, ...]
+
+        Retorna:
+            Lista normalizada y validada (sin duplicados por 'nombre').
+
+        Raises:
+            ValidationError: formato inválido o datos inconsistentes.
         """
         try:
             data = json.loads(payload or "[]")
@@ -92,11 +138,13 @@ class QuestionnaireService:
         if not isinstance(data, list):
             raise ValidationError(message="Se esperaba una lista de proveedores en JSON.", field="answer")
 
-        out: list[dict] = []
+        out: List[Dict[str, Any]] = []
         seen = set()
+
         for row in data:
             if not isinstance(row, dict):
                 continue
+
             nombre = str(row.get("nombre", "")).strip()
             if not nombre:
                 raise ValidationError(message="Cada proveedor debe incluir 'nombre'.", field="answer")
@@ -107,6 +155,7 @@ class QuestionnaireService:
                 continue
             seen.add(key)
 
+            # estibas
             try:
                 estibas = row.get("estibas", None)
                 estibas = None if estibas in ("", None) else int(estibas)
@@ -115,6 +164,7 @@ class QuestionnaireService:
             except Exception:
                 raise ValidationError(message=f"Estibas inválidas para proveedor '{nombre}'.", field="answer")
 
+            # recipientes
             try:
                 recip = row.get("recipientes", None)
                 recip = None if recip in ("", None) else int(recip)
@@ -124,7 +174,6 @@ class QuestionnaireService:
                 raise ValidationError(message=f"Recipientes inválidos para proveedor '{nombre}'.", field="answer")
 
             orden_compra = str(row.get("orden_compra", row.get("oc", "") or "")).strip()
-
             unidad = self._normalize_unidad(row.get("unidad", ""))
 
             out.append({
@@ -139,8 +188,23 @@ class QuestionnaireService:
             raise ValidationError(message="Agrega al menos un proveedor válido.", field="answer")
         return out
 
-    # --------------- Caso de uso principal ---------------
+    # ==========================================================================
+    #   Caso de uso principal
+    # ==========================================================================
+
     def save_and_advance(self, cmd: SaveAndAdvanceCommand) -> SaveAndAdvanceResult:
+        """
+        Guarda la respuesta actual y calcula la siguiente pregunta del flujo.
+
+        Reglas clave:
+          - “Proveedor” (tag semántico) → rama multi-fila *sin limpiar* la pregunta.
+          - Resto de preguntas → limpieza de la misma pregunta (no proveedor) y
+            truncado de respuestas futuras (si `force_truncate_future=True`).
+
+        Returns:
+            SaveAndAdvanceResult con la respuesta persistida, el id de la
+            siguiente pregunta (o None), `is_finished` y metadatos derivados.
+        """
         # 1) Cargar aggregate y validar existencia
         submission = self.submission_repo.get(cmd.submission_id)
         if not submission:
@@ -158,7 +222,7 @@ class QuestionnaireService:
                 entity_id=str(cmd.question_id),
             )
 
-        # Atributos del comando
+        # Atributos del comando (no asumimos presencia)
         answer_text = getattr(cmd, "answer_text", None)
         answer_choice_id = getattr(cmd, "answer_choice_id", None)
         uploads = getattr(cmd, "uploads", None)
@@ -204,6 +268,7 @@ class QuestionnaireService:
             )
         if has_uploads and len(uploads) > max_files:
             uploads = (uploads or [])[:max_files]
+            # mantener inmutabilidad del comando para trazabilidad
             cmd = replace(cmd, uploads=uploads)
 
         # 3) Requeridos (salvo proveedor con JSON válido más abajo)
@@ -216,7 +281,7 @@ class QuestionnaireService:
         is_actor_question = is_actor_tag(tag)
 
         # 5) ¿Es PROVEEDOR con lista JSON?
-        rows_from_json: list[dict] = []
+        rows_from_json: List[Dict[str, Any]] = []
         used_multi = False
         if tag == "proveedor" and has_text:
             s = (answer_text or "").strip()
@@ -228,9 +293,9 @@ class QuestionnaireService:
         multi_count = 0
 
         if used_multi and rows_from_json:
-            # --------- 🟢 Rama CORREGIDA: NO limpiar; MERGE por clave ---------
+            # --------- Rama proveedor (merge por clave, sin limpiar) ----------
             # Clave de merge por proveedor: (nombre.lower(), orden_compra.lower())
-            def key_of(meta_or_row: dict) -> tuple[str, str]:
+            def key_of(meta_or_row: Dict[str, Any]) -> tuple[str, str]:
                 return (
                     str((meta_or_row.get("nombre") or meta_or_row.get("Nombre") or "")).strip().lower(),
                     str((meta_or_row.get("orden_compra") or meta_or_row.get("oc") or "")).strip().lower(),
@@ -241,7 +306,7 @@ class QuestionnaireService:
                 a for a in self.answer_repo.list_by_submission(submission.id)
                 if str(a.question_id) == str(question.id)
             ]
-            existing_by_key: dict[tuple[str, str], DAnswer] = {}
+            existing_by_key: Dict[tuple[str, str], DAnswer] = {}
             for a in existing:
                 row_meta = dict(a.meta or {})
                 row_meta["nombre"] = a.answer_text or row_meta.get("nombre", "")
@@ -259,7 +324,7 @@ class QuestionnaireService:
                 }
 
                 if k in existing_by_key:
-                    # update-in-place (inmutabilidad → nueva entidad con meta/answer_text)
+                    # inmutabilidad: nueva entidad con meta/texto actualizados
                     prev = existing_by_key[k]
                     entity = prev.with_text(row["nombre"]).with_meta(base_meta)
                     saved = self.answer_repo.save(entity)
@@ -267,7 +332,7 @@ class QuestionnaireService:
                     entity = DAnswer.create_new(
                         submission_id=submission.id,
                         question_id=question.id,
-                        user_id=user_id,            # compat con repo/entidad actuales
+                        user_id=user_id,            # compat con repos/entidad actuales
                         answer_text=row["nombre"],
                         answer_choice_id=None,
                         answer_file_path=None,
@@ -277,18 +342,18 @@ class QuestionnaireService:
                     saved = self.answer_repo.save(entity)
                 multi_count += 1
 
-            # 🔸 Importante: NO truncamos futuras respuestas y NO limpiamos las de esta pregunta
-            next_qid = None  # lo resolvemos más abajo como siempre
+            # Importante: no truncamos futuras respuestas ni limpiamos la pregunta
+            next_qid = None  # se resuelve con la lógica general más abajo
 
         else:
-            # --------- Rama clásica (texto/choice/archivo único) ---------
+            # ---------------------- Rama clásica (una respuesta) ----------------
             # 6) Truncar futuras respuestas
             if force_truncate_future:
                 self.answer_repo.delete_after_question(
                     submission_id=submission.id, question_id=question.id
                 )
 
-            # 7) Limpiar SOLO en preguntas no-proveedor (comportamiento existente)
+            # 7) Limpiar SOLO en preguntas no-proveedor (comportamiento actual)
             if tag != "proveedor":
                 self.answer_repo.clear_for_question(
                     submission_id=submission.id,
@@ -296,7 +361,7 @@ class QuestionnaireService:
                 )
 
             # 8) Guardar la respuesta única
-            saved_path = None
+            saved_path: Optional[str] = None
             if has_uploads:
                 uf = uploads[0]
                 saved_path = self.storage.save(
@@ -316,7 +381,7 @@ class QuestionnaireService:
             saved = self.answer_repo.save(entity)
             multi_count = 1
 
-            # Mantener comportamiento actual si viene actor_id explícito (no aplica a proveedor)
+            # 9) Efectos derivados: mapear actor explícito al submission
             if actor_id and is_actor_question:
                 field_map = {
                     "proveedor": "proveedor_id",
@@ -325,11 +390,9 @@ class QuestionnaireService:
                 }
                 target = field_map.get(tag)
                 if target:
-                    self.submission_repo.save_partial_updates(
-                        submission.id, **{target: actor_id}
-                    )
+                    self.submission_repo.save_partial_updates(submission.id, **{target: actor_id})
 
-        # 9) Resolver siguiente pregunta
+        # 10) Resolver siguiente pregunta
         next_qid = None
         if choice:
             branch = getattr(choice, "branch_to", None) or getattr(choice, "branch_to_id", None)

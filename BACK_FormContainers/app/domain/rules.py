@@ -1,16 +1,25 @@
+# -*- coding: utf-8 -*-
 """
-Reglas de negocio y utilidades de normalización/validación.
+Reglas de negocio y utilidades de normalización/validación relacionadas con OCR.
+
+Incluye heurísticas para:
 - Placas (CO):   ABC123
-- Precintos:     mejor candidato alfanumérico (preferir que termine en dígito).
-- Contenedores:  ISO 6346 (AAAA1234567) validado.
+- Precintos:     mejor candidato alfanumérico (prefiere terminar en dígito).
+- Contenedores:  ISO 6346 (AAAA1234567) con validación completa.
+
+Notas:
+- Este módulo no depende de frameworks; puede usarse desde servicios y repositorios.
+- Separamos helpers internos (prefijo `_`) de la API pública (expuesta en `__all__`).
 """
 
 from __future__ import annotations
 
+# ── Stdlib ─────────────────────────────────────────────────────────────────────
 import re
 import unicodedata
 from typing import Optional
 
+# ── API pública ────────────────────────────────────────────────────────────────
 __all__ = [
     # semántica
     "canonical_semantic_tag",
@@ -22,18 +31,27 @@ __all__ = [
     "validar_iso6346",
 ]
 
-# ---------------------------------------------------------------------
-# Normalización de semantic_tag (slugs usados en la BD)
-# ---------------------------------------------------------------------
+# ==============================================================================
+#   Normalización de semantic_tag (slugs usados en la BD)
+# ==============================================================================
 
 def _nfkc_upper(s: Optional[str]) -> str:
+    """Normaliza a NFKC y mayúsculas; `None` se trata como cadena vacía."""
     return unicodedata.normalize("NFKC", (s or "")).upper()
 
+
 def _slugify_tag(s: Optional[str]) -> str:
-    # simplificado: quitar acentos, bajar a ASCII básico
+    """
+    Slug simple para tags semánticos:
+      - Quita acentos (NFKD → ASCII).
+      - Sustituye espacios y separadores comunes por `-`.
+      - Pasa a minúsculas.
+    """
     txt = unicodedata.normalize("NFKD", (s or "").strip()).encode("ascii", "ignore").decode("ascii")
     return re.sub(r"[\s_/]+", "-", txt.strip().lower())
 
+
+# Mapeo a slugs canónicos aceptados en la base de datos
 _CANON_MAP = {
     "none": "none",
     "placa": "placa",
@@ -53,27 +71,32 @@ _CANON_MAP = {
     "receiver": "receptor",
 }
 
+
 def canonical_semantic_tag(raw: Optional[str]) -> str:
     """
-    Devuelve el slug canónico para el semantic_tag compatible con la migración:
+    Devuelve el slug canónico para `semantic_tag`, compatible con la migración:
     {'none','placa','proveedor','transportista','receptor','contenedor','precinto'}.
     """
     s = _slugify_tag(raw)
     return _CANON_MAP.get(s, "none")
 
+
 def is_actor_tag(tag: Optional[str]) -> bool:
+    """True si el tag canónico corresponde a entidades de actor (proveedor/transportista/receptor)."""
     return canonical_semantic_tag(tag) in {"proveedor", "transportista", "receptor"}
 
-# ---------------------------------------------------------------------
-# Utilidades internas para OCR (NO cambian contratos públicos)
-# ---------------------------------------------------------------------
+
+# ==============================================================================
+#   Utilidades internas para OCR (NO cambian contratos públicos)
+# ==============================================================================
 
 _MESES_LARGO = {
-    "ENERO","FEBRERO","MARZO","ABRIL","MAYO","JUNIO",
-    "JULIO","AGOSTO","SEPTIEMBRE","OCTUBRE","NOVIEMBRE","DICIEMBRE",
+    "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
+    "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE",
 }
-_MESES_CORTO = {"ENE","FEB","MAR","ABR","MAY","JUN","JUL","AGO","SEP","OCT","NOV","DIC"}
+_MESES_CORTO = {"ENE", "FEB", "MAR", "ABR", "MAY", "JUN", "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"}
 _HORA_MARKERS = ("A.M", "AM", "P.M", "PM", "A. M", "P. M")
+
 
 def _line_seems_camera_stamp(line: str) -> bool:
     """
@@ -95,6 +118,7 @@ def _line_seems_camera_stamp(line: str) -> bool:
         return True
     return False
 
+
 def _strip_camera_stamps(texto: str) -> str:
     """Quita las líneas que parecen la marca de fecha/hora de la cámara."""
     kept = []
@@ -102,6 +126,7 @@ def _strip_camera_stamps(texto: str) -> str:
         if not _line_seems_camera_stamp(ln):
             kept.append(ln)
     return "\n".join(kept)
+
 
 def _is_probable_date_number(num: str) -> bool:
     """Filtro extra para fallback numérico: evita YYYYMMDD / DDMMYYYY / HHMMSS."""
@@ -119,10 +144,13 @@ def _is_probable_date_number(num: str) -> bool:
         return True
     return False
 
+
 # Detecta y elimina duplicación exacta (ABCD...ABCD... -> ABCD...)
 _DUP_RE = re.compile(r"^(.{5,})\1+$")
 
+
 def _undouble(token: str) -> str:
+    """Reduce duplicación exacta en el token (p. ej., 'EBS0053049EBS0053049' → 'EBS0053049')."""
     t = token or ""
     m = _DUP_RE.match(t)
     if m:
@@ -133,9 +161,11 @@ def _undouble(token: str) -> str:
         return t[: n // 2]
     return t
 
+
 # NIT colombiano (con o sin puntos) opcionalmente precedido por la palabra NIT
 _NIT_WORD_RE = re.compile(r"\bN\.?\s*I\.?\s*T\.?\b[:\s-]*", re.IGNORECASE)
-_NIT_NUM_RE  = re.compile(r"\b\d{3}(?:[.\s]?\d{3}){2}-?\d\b")  # 900.632.994-2 | 900632994-2
+_NIT_NUM_RE = re.compile(r"\b\d{3}(?:[.\s]?\d{3}){2}-?\d\b")  # 900.632.994-2 | 900632994-2
+
 
 def _strip_nit(texto: str) -> str:
     """
@@ -149,20 +179,28 @@ def _strip_nit(texto: str) -> str:
     T = _NIT_NUM_RE.sub(" ", T)
     return T
 
-# --------------
-# Reglas de OCR
-# --------------
+
+# ==============================================================================
+#   Reglas de OCR
+# ==============================================================================
 
 # =============== Placas (CO) ===============
-_PLACA_RE = re.compile(r"([A-Z]{3})(\d{3})")
+
+_PLACA_RE = re.compile(r"([A-Z]{3})(\d{3})")  # Referencia: formato ABC123 (se usa en validaciones internas)
+
 
 def normalizar_placa(texto: Optional[str]) -> str:
     """
     Detecta una placa colombiana (3 letras + 3 dígitos) en formatos:
     'ABC123', 'ABC-123', 'abc 123', 'A B C 1 2 3'.
-    Devuelve 'ABC123' o 'NO_DETECTADA' si no hay match.
-    (Se ignoran falsos positivos de la marca de fecha/hora de la cámara,
-    por ejemplo 'MAY708', 'JUN715', etc.)
+
+    Devuelve:
+        - 'ABC123' si hay match.
+        - 'NO_DETECTADA' en caso contrario.
+
+    Notas:
+        - Se ignoran falsos positivos derivados de timestamps de cámara,
+          por ejemplo 'MAY708', 'JUN715', etc.
     """
     if not texto:
         return "NO_DETECTADA"
@@ -174,7 +212,7 @@ def normalizar_placa(texto: Optional[str]) -> str:
     def _pick(s: str) -> str:
         for m in re.finditer(r"[A-Z]{3}\d{3}", s):
             pref = m.group(0)[:3]
-            if pref in _MESES_CORTO:    # evita 'MAY708'/'JUN701'...
+            if pref in _MESES_CORTO:  # evita 'MAY708'/'JUN701'...
                 continue
             return m.group(0)
         return ""
@@ -192,18 +230,21 @@ def normalizar_placa(texto: Optional[str]) -> str:
 
     return "NO_DETECTADA"
 
+
 # =============== Precintos ===============
 
 def _is_container_like(s: str) -> bool:
-    # Evita confundir un contenedor ISO 6346 (AAAA9999999) con un precinto
+    """Evita confundir un contenedor ISO 6346 (AAAA9999999) con un precinto."""
     return bool(re.fullmatch(r"[A-Z]{4}\d{7}", s))
+
 
 def _score_precinto(c: str) -> int:
     """
-    Scoring ajustado:
+    Scoring ajustado para priorizar el mejor precinto:
+
       +20 si longitud ideal 6–8
       +10 si 5 o 9
-      -10 si >9 (p.ej. NIT) salvo que no haya otra opción
+      -10 si >9 (p.ej., NIT) salvo que no haya otra opción
       +6 si mezcla letras y dígitos
       +5 si termina en dígito
       -8 si termina en letras (ruido '…ABC')
@@ -222,19 +263,25 @@ def _score_precinto(c: str) -> int:
     s -= 2 * len(re.findall(r"(.)\1{3,}", c))
     return s
 
+
 def limpiar_precinto(texto: Optional[str]) -> str:
     """
-    Extrae un precinto alfanumérico robusto:
-    - Une tokens contiguos (A123 + 45 -> A12345)
-    - Evita duplicados exactos (X...X...)
-    - Evita NIT
-    - Prefiere longitudes 6–8 y que termine en dígito
-    - Fallback: numérico largo (excluyendo fechas HHMMSS / YYYYMMDD)
+    Extrae un precinto alfanumérico robusto desde texto OCR:
+
+    - Une tokens contiguos (A123 + 45 -> A12345).
+    - Evita duplicados exactos (X...X...).
+    - Evita NIT.
+    - Prefiere longitudes 6–8 y que termine en dígito.
+    - Fallback: numérico largo (excluyendo fechas HHMMSS / YYYYMMDD / DDMMYYYY).
+
+    Retorna:
+        - Mejor candidato por score.
+        - 'NO DETECTADO' si no hay suficientes evidencias.
     """
     if not texto:
         return "NO DETECTADO"
 
-    # 1) normalizar y quitar timestamp + NIT
+    # 1) Normalizar y quitar timestamp + NIT
     t = _nfkc_upper(_strip_nit(_strip_camera_stamps(texto)))
 
     candidates = set()
@@ -246,8 +293,7 @@ def limpiar_precinto(texto: Optional[str]) -> str:
     # 3) Colapsar separadores A..Z0-9 + sep + A..Z0-9
     for sp in re.findall(r"(?:[A-Z0-9]{2,}[^A-Z0-9]+){1,}[A-Z0-9]{2,}", t):
         join = re.sub(r"[^A-Z0-9]+", "", sp)
-        # si quedó 'AAAAA' dos veces pegado, reducir
-        candidates.add(_undouble(join))
+        candidates.add(_undouble(join))  # reducir duplicación si quedó pegado
 
     # 4) Ventanas: token con letras seguido de grupos numéricos cortos
     tokens = re.findall(r"[A-Z0-9]+", t)
@@ -288,29 +334,38 @@ def limpiar_precinto(texto: Optional[str]) -> str:
         nums = []
         for m in re.finditer(r"\b(?<!\d)(\d{5,9})(?!\d)\b", t):
             d = m.group(1)
-            if not (re.fullmatch(r"20\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])", d) or
-                    re.fullmatch(r"(0[1-9]|[12]\d|3[01])(0[1-9]|1[0-2])20\d{2}", d) or
-                    re.fullmatch(r"([01]\d|2[0-3])[0-5]\d[0-5]\d", d)):
+            if not (
+                re.fullmatch(r"20\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])", d) or
+                re.fullmatch(r"(0[1-9]|[12]\d|3[01])(0[1-9]|1[0-2])20\d{2}", d) or
+                re.fullmatch(r"([01]\d|2[0-3])[0-5]\d[0-5]\d", d)
+            ):
                 nums.append(d)
         return max(nums, key=lambda x: (6 <= len(x) <= 8, len(x)), default="NO DETECTADO")
 
-    # 7) Si hay candidatos de longitud típica 6–8, descartar numéricos >=9 (NIT) y priorizar esos
+    # 7) Si hay candidatos de longitud típica 6–8, priorizarlos
     typical = [c for c in cleaned if 6 <= len(c) <= 8]
     pool = typical or cleaned
     if typical:
+        # descartar numéricos >=9 (p.ej., NIT enmascarados)
         pool = [c for c in pool if not re.fullmatch(r"9\d{8,9}", re.sub(r"\D", "", c))]
 
     # 8) Elegir el mejor por score
     best = max(pool, key=_score_precinto)
     return best or "NO DETECTADO"
 
+
 # =============== Contenedores ISO 6346 ===============
+
 _ISO_CANDIDATE_RE = re.compile(r"[A-Z]{4}\d{7}")
+
 
 def extraer_contenedor(texto: Optional[str]) -> str:
     """
-    Busca códigos ISO 6346. Devuelve el primero que pase validación.
-    Si ninguno es válido → 'NO DETECTADO'.
+    Busca códigos ISO 6346 en el texto y retorna el primero que pase validación.
+
+    Retorna:
+        - Código ISO válido ('AAAA1234567').
+        - 'NO DETECTADO' si no hay ninguno válido.
     """
     if not texto:
         return "NO DETECTADO"
@@ -321,10 +376,17 @@ def extraer_contenedor(texto: Optional[str]) -> str:
             return code
     return "NO DETECTADO"
 
+
 def validar_iso6346(code: str) -> bool:
     """
-    Valida ISO 6346 con tabla oficial y pesos 2**i.
-    Formato: 'AAAA1234567' (4 letras + 7 dígitos). Último es dígito de control.
+    Valida un código ISO 6346 con tabla oficial de valores y pesos `2**i`.
+
+    Formato:
+        'AAAA1234567' → 4 letras (propietario/tipo) + 7 dígitos (incluye dígito de control).
+
+    Regla:
+        - Se calcula el dígito de control como `((sum(valor_i * 2**i)) % 11) % 10`
+          sobre los 10 primeros caracteres.
     """
     if not isinstance(code, str):
         return False

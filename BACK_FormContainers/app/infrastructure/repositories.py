@@ -1,13 +1,39 @@
+# -*- coding: utf-8 -*-
+"""
+Implementaciones Django de los repositorios del dominio.
+
+Objetivo:
+- Traducir entre entidades de dominio y modelos Django (mapeos explícitos).
+- Encapsular consultas/operaciones específicas de persistencia (prefetch, select_related,
+  subconsultas, transacciones).
+
+Lineamientos:
+- No incluir lógica de negocio (queda en dominio / aplicación).
+- Mantener APIs de los Protocols definidos en `app.domain.repositories`.
+- Documentar decisiones de performance (prefetch/select_related, índices, atomic).
+
+Repositorios implementados:
+- DjangoAnswerRepository
+- DjangoSubmissionRepository
+- DjangoQuestionRepository
+- DjangoChoiceRepository
+- DjangoActorRepository
+- DjangoQuestionnaireRepository
+"""
+
 from __future__ import annotations
 
-from typing import List, Optional, Dict, Any
+# ── Stdlib ─────────────────────────────────────────────────────────────────────
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 from datetime import timedelta
 
+# ── Django ORM ─────────────────────────────────────────────────────────────────
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Exists, OuterRef, Prefetch, Subquery, Q
 
+# ── Entidades de dominio ──────────────────────────────────────────────────────
 from app.domain.entities import (
     Answer as DAnswer,
     Submission as DSubmission,
@@ -15,15 +41,19 @@ from app.domain.entities import (
     Question as DQ,
     Choice as DC,
 )
+
+# ── Puertos de repositorio (Protocol) ─────────────────────────────────────────
 from app.domain.repositories import (
-    AnswerRepository,
-    SubmissionRepository,
-    QuestionRepository,
-    ChoiceRepository,
-    QuestionnaireRepository,
-    UserPK,
     ActorRepository,
+    AnswerRepository,
+    ChoiceRepository,
+    QuestionRepository,
+    QuestionnaireRepository,
+    SubmissionRepository,
+    UserPK,
 )
+
+# ── Modelos Django ────────────────────────────────────────────────────────────
 from app.infrastructure.models import (
     Answer as AnswerModel,
     Submission as SubmissionModel,
@@ -33,15 +63,29 @@ from app.infrastructure.models import (
     Questionnaire as QuestionnaireModel,
 )
 
-# ------------------------------
-# Answer (implementación Django)
-# ------------------------------
+# ==============================================================================
+#   Answer (implementación Django)
+# ==============================================================================
+
 class DjangoAnswerRepository(AnswerRepository):
+    """
+    Repositorio de Answer basado en Django ORM.
+
+    Responsabilidades:
+    - Upsert por ID (compat con esquema original: answer_file/meta/timestamp).
+    - Operaciones de consulta por usuario, submission y pregunta.
+    - Limpieza de respuestas en flujos de "Guardar & Avanzar".
+    - Eliminación segura de archivos asociados.
+    """
+
     @transaction.atomic
     def save(self, answer: DAnswer) -> DAnswer:
         """
-        Upsert por ID. Compatible con el esquema antiguo (answer_file/meta/timestamp)
-        y opcionalmente con table_id/row_index si existen en el modelo.
+        Upsert por ID. Compatible con el esquema antiguo (answer_file/meta/timestamp).
+        Si existe → `select_for_update` y actualización; si no → creación.
+
+        Returns:
+            Entidad de dominio persistida (rehidratada).
         """
         try:
             am = AnswerModel.objects.select_for_update().get(id=answer.id)
@@ -52,6 +96,9 @@ class DjangoAnswerRepository(AnswerRepository):
         return self._model_to_entity(am)
 
     def get(self, id: UUID) -> Optional[DAnswer]:
+        """
+        Obtiene una Answer por ID con relaciones mínimas para lectura.
+        """
         am = (
             AnswerModel.objects
             .select_related("submission", "question", "answer_choice", "user")
@@ -62,15 +109,20 @@ class DjangoAnswerRepository(AnswerRepository):
 
     @transaction.atomic
     def delete(self, id: UUID) -> None:
+        """
+        Elimina una Answer y, si tiene archivo, borra el recurso físico (best-effort).
+        """
         am = AnswerModel.objects.filter(id=id).first()
         if not am:
             return
-        # borrar archivo físico si existe
         if getattr(am, "answer_file", None):
             am.answer_file.delete(save=False)
         am.delete()
 
     def list_by_user(self, user_id: UserPK, *, limit: Optional[int] = None) -> List[DAnswer]:
+        """
+        Lista respuestas por usuario, ordenadas por timestamp descendente.
+        """
         qs = (
             AnswerModel.objects.filter(user_id=user_id)
             .select_related("submission", "question", "answer_choice", "user")
@@ -81,6 +133,9 @@ class DjangoAnswerRepository(AnswerRepository):
         return [self._model_to_entity(x) for x in qs]
 
     def list_by_submission(self, submission_id: UUID) -> List[DAnswer]:
+        """
+        Lista respuestas de una submission (orden cronológico ascendente).
+        """
         qs = (
             AnswerModel.objects
             .filter(submission_id=submission_id)
@@ -90,6 +145,9 @@ class DjangoAnswerRepository(AnswerRepository):
         return [self._model_to_entity(x) for x in qs]
 
     def list_by_question(self, question_id: UUID) -> List[DAnswer]:
+        """
+        Lista respuestas por pregunta (en cualquier submission), ordenadas por tiempo.
+        """
         qs = (
             AnswerModel.objects
             .filter(question_id=question_id)
@@ -98,8 +156,15 @@ class DjangoAnswerRepository(AnswerRepository):
         )
         return [self._model_to_entity(x) for x in qs]
 
-    # 🔹 NUEVO: optimiza el merge por pregunta + submission
+    # ---- Utilidades de performance para merge por submission+pregunta ----
+
     def list_by_submission_question(self, *, submission_id: UUID, question_id: UUID) -> List[DAnswer]:
+        """
+        Devuelve sólo las respuestas de una pregunta dentro de un submission.
+
+        Útil para optimizar operaciones de merge sin traer todas las respuestas
+        del submission completo.
+        """
         qs = (
             AnswerModel.objects
             .filter(submission_id=submission_id, question_id=question_id)
@@ -108,16 +173,24 @@ class DjangoAnswerRepository(AnswerRepository):
         )
         return [self._model_to_entity(x) for x in qs]
 
-    # 🔹 NUEVO: guarda en lote (fallback a save uno a uno)
     @transaction.atomic
     def save_many(self, answers: List[DAnswer]) -> List[DAnswer]:
+        """
+        Guarda en lote (fallback a `save` uno a uno). La implementación concreta
+        podría optimizar con bulk_create/bulk_update si el modelo/flujo lo permite.
+        """
         out: List[DAnswer] = []
         for a in answers:
             out.append(self.save(a))
         return out
 
-    # helpers
+    # ---- Helpers internos ----
+
     def _delete_queryset(self, qs) -> int:
+        """
+        Elimina respuestas del queryset, cuidando el borrado físico de archivos.
+        Retorna la cantidad eliminada.
+        """
         count = 0
         for am in qs:
             if getattr(am, "answer_file", None):
@@ -126,9 +199,14 @@ class DjangoAnswerRepository(AnswerRepository):
             count += 1
         return count
 
-    # operaciones flujo Guardar&Avanzar
+    # ---- Operaciones específicas del flujo Guardar&Avanzar ----
+
     @transaction.atomic
     def clear_for_question(self, *, submission_id: UUID, question_id: UUID) -> int:
+        """
+        Elimina respuestas de ESA pregunta dentro del submission (idempotente).
+        Retorna cantidad de filas eliminadas.
+        """
         qs = list(
             AnswerModel.objects.filter(
                 submission_id=submission_id,
@@ -139,6 +217,10 @@ class DjangoAnswerRepository(AnswerRepository):
 
     @transaction.atomic
     def delete_after_question(self, *, submission_id: UUID, question_id: UUID) -> int:
+        """
+        Elimina respuestas de preguntas posteriores (navegación lineal).
+        Retorna cantidad de filas eliminadas.
+        """
         q = QuestionModel.objects.filter(id=question_id).only("questionnaire_id", "order").first()
         if not q:
             return 0
@@ -151,18 +233,16 @@ class DjangoAnswerRepository(AnswerRepository):
         )
         return self._delete_queryset(qs)
 
-    # ---------- mapeos entidad/modelo (esquema nuevo) ----------
+    # ---- Mapeos entidad/modelo ----
+
     def _model_to_entity(self, am: AnswerModel) -> DAnswer:
         """
-        Convert AnswerModel → dominio con campos nuevos.
-        Soporta opcionalmente table_id/row_index si existen.
+        Map: AnswerModel → Answer (dominio).
+
+        Notas:
+        - `answer_file_path` se toma de `answer_file.name` si existe.
+        - `timestamp` se respeta desde el modelo (campo legacy).
         """
-        created_at = getattr(am, "created_at", None) or getattr(am, "timestamp", None)
-        updated_at = getattr(am, "updated_at", None)
-
-        table_id = getattr(am, "table_id", None)
-        row_index = getattr(am, "row_index", None)
-
         return DAnswer.rehydrate(
             id=am.id,
             submission_id=am.submission_id,
@@ -177,6 +257,9 @@ class DjangoAnswerRepository(AnswerRepository):
         )
 
     def _create_model_from_entity(self, answer: DAnswer) -> AnswerModel:
+        """
+        Crea AnswerModel desde entidad de dominio (campos legacy incluidos).
+        """
         return AnswerModel.objects.create(
             id=answer.id,
             submission_id=answer.submission_id,
@@ -191,6 +274,9 @@ class DjangoAnswerRepository(AnswerRepository):
         )
 
     def _update_model_from_entity(self, am: AnswerModel, answer: DAnswer) -> None:
+        """
+        Actualiza un AnswerModel existente con datos de la entidad.
+        """
         am.submission_id = answer.submission_id
         am.question_id = answer.question_id
         am.answer_text = answer.answer_text
@@ -203,16 +289,23 @@ class DjangoAnswerRepository(AnswerRepository):
         am.timestamp = answer.timestamp
 
 
-# --------------------------------
-# Submission (implementación Django)
-# --------------------------------
+# ==============================================================================
+#   Submission (implementación Django)
+# ==============================================================================
+
 class DjangoSubmissionRepository(SubmissionRepository):
+    """
+    Repositorio de Submission con utilidades para API y agregaciones históricas.
+    """
+
     def get(self, id: UUID) -> Optional[DSubmission]:
         model = SubmissionModel.objects.filter(id=id).first()
         return self._model_to_entity(model) if model else None
 
     def save(self, submission: DSubmission) -> DSubmission:
-        """Save a submission entity, creating or updating as needed."""
+        """
+        Upsert de submission (crea/actualiza según corresponda).
+        """
         try:
             model = SubmissionModel.objects.get(id=submission.id)
             self._update_model_from_entity(model, submission)
@@ -223,6 +316,9 @@ class DjangoSubmissionRepository(SubmissionRepository):
         return self._model_to_entity(model)
 
     def save_partial_updates(self, id: UUID, **fields) -> None:
+        """
+        Actualización parcial de campos (evita sobreescrituras no intencionales).
+        """
         if not fields:
             return
         sub = SubmissionModel.objects.filter(id=id).first()
@@ -232,7 +328,8 @@ class DjangoSubmissionRepository(SubmissionRepository):
             setattr(sub, k, v)
         sub.save(update_fields=list(fields.keys()))
 
-    # métodos adicionales útiles para interfaces/casos de uso
+    # ---- Utilidades adicionales para interfaces/casos de uso ----
+
     def find_recent_draft_without_answers(
         self,
         questionnaire_id: UUID,
@@ -240,6 +337,10 @@ class DjangoSubmissionRepository(SubmissionRepository):
         regulador_id: Optional[UUID],
         minutes: int = 10,
     ) -> Optional[DSubmission]:
+        """
+        Busca un borrador reciente (sin respuestas) para reusar.
+        Límite temporal configurable vía `minutes`.
+        """
         since = timezone.now() - timedelta(minutes=minutes)
         qs = SubmissionModel.objects.filter(
             questionnaire_id=questionnaire_id,
@@ -261,6 +362,9 @@ class DjangoSubmissionRepository(SubmissionRepository):
         regulador_id: Optional[UUID] = None,
         placa_vehiculo: Optional[str] = None,
     ) -> DSubmission:
+        """
+        Crea una nueva submission y asegura la coherencia de `regulador_id`.
+        """
         obj = SubmissionModel.objects.create(
             questionnaire_id=questionnaire_id,
             tipo_fase=tipo_fase,
@@ -271,6 +375,9 @@ class DjangoSubmissionRepository(SubmissionRepository):
         return self._model_to_entity(obj)
 
     def get_fase1_by_regulador(self, regulador_id: UUID) -> Optional[DSubmission]:
+        """
+        Obtiene la última Fase 1 (entrada) finalizada para un regulador.
+        """
         model = (
             SubmissionModel.objects.filter(regulador_id=regulador_id, tipo_fase="entrada")
             .order_by("-fecha_cierre", "-fecha_creacion")
@@ -279,10 +386,18 @@ class DjangoSubmissionRepository(SubmissionRepository):
         return self._model_to_entity(model) if model else None
 
     def set_regulador(self, submission_id: UUID, regulador_id: UUID) -> None:
+        """
+        Asigna/actualiza el `regulador_id` de una submission.
+        """
         SubmissionModel.objects.filter(id=submission_id).update(regulador_id=regulador_id)
 
-    # utilidades expuestas en la interfaz
+    # ---- Consultas para vistas de API ----
+
     def list_for_api(self, params):
+        """
+        Retorna queryset de submissions con relaciones y filtros aplicables
+        (pensado para vistas de listado). No evalúa el queryset.
+        """
         qs = (
             SubmissionModel.objects.all()
             .select_related("questionnaire", "proveedor", "transportista", "receptor")
@@ -314,6 +429,7 @@ class DjangoSubmissionRepository(SubmissionRepository):
         if p.get("fecha_hasta"):
             qs = qs.filter(fecha_cierre__date__lte=p["fecha_hasta"])
 
+        # Pendientes de fase 2 (cuando se listan entradas que aún no tienen salida final)
         if p.get("solo_pendientes_fase2") in ("1", "true", "True") and p.get("tipo_fase") == "entrada":
             fase2 = SubmissionModel.objects.filter(
                 tipo_fase="salida",
@@ -327,6 +443,14 @@ class DjangoSubmissionRepository(SubmissionRepository):
         return qs
 
     def ensure_regulador_on_create(self, obj: SubmissionModel) -> None:
+        """
+        Asegura coherencia de `regulador_id` entre Fase 1 (entrada) y Fase 2 (salida).
+
+        Reglas:
+        - Si es entrada y no trae regulador_id → se setea a su propio id.
+        - Si es salida y trae regulador_id → asegura que la entrada correspondiente
+          tenga el mismo regulador_id.
+        """
         if obj.tipo_fase == "entrada" and not obj.regulador_id:
             obj.regulador_id = obj.id
             obj.save(update_fields=["regulador_id"])
@@ -338,7 +462,12 @@ class DjangoSubmissionRepository(SubmissionRepository):
                 entrada.regulador_id = obj.regulador_id
                 entrada.save(update_fields=["regulador_id"])
 
+    # ---- Detalle con relaciones (para serialización completa) ----
+
     def detail_queryset(self):
+        """
+        Retorna un queryset de submissions con respuestas + preguntas + choice prefetch-eados.
+        """
         answers_qs = (
             AnswerModel.objects
             .select_related("question", "answer_choice")
@@ -351,17 +480,30 @@ class DjangoSubmissionRepository(SubmissionRepository):
         )
 
     def get_detail(self, id: UUID) -> Optional[DSubmission]:
+        """
+        Obtiene una submission con relaciones precargadas y la mapea a dominio.
+        """
         model = self.detail_queryset().filter(id=id).first()
         return self._model_to_entity(model) if model else None
 
     def get_for_api(self, id: UUID):
         """
         Devuelve el modelo Django de Submission con relaciones y respuestas
-        prefetch-eadas para serialización en la API.
+        prefetch-eadas para serialización en la API (sin mapear a dominio).
         """
         return self.detail_queryset().filter(id=id).first()
 
+    # ---- Agregación de historial ----
+
     def history_aggregate(self, *, fecha_desde=None, fecha_hasta=None):
+        """
+        Agrega por `regulador_id` las últimas fases (F1/F2) y la última fecha de cierre.
+
+        Retorna queryset de dicts:
+            {
+              regulador_id, fase1_id, fase2_id, ultima_fecha_cierre
+            }
+        """
         base = SubmissionModel.objects.filter(regulador_id__isnull=False, finalizado=True)
 
         if fecha_desde:
@@ -403,20 +545,27 @@ class DjangoSubmissionRepository(SubmissionRepository):
                 fase2_id=Subquery(last_f2),
                 ultima_fecha_cierre=Subquery(last_date),
             )
-            .distinct()  # Evitar duplicados
+            .distinct()
             .order_by("-ultima_fecha_cierre")
         )
 
     def get_by_ids(self, ids):
+        """
+        Retorna un dict {str(id): SubmissionModel} para los ids solicitados
+        (con relaciones select_related relevantes).
+        """
         qs = (
             SubmissionModel.objects.filter(id__in=ids)
             .select_related("questionnaire", "proveedor", "transportista", "receptor")
         )
         return {str(s.id): s for s in qs}
 
-    # Explicit bidirectional mapping functions
+    # ---- Mapeos entidad/modelo ----
+
     def _model_to_entity(self, model: SubmissionModel) -> DSubmission:
-        """Convert SubmissionModel to Submission domain entity."""
+        """
+        Map: SubmissionModel → Submission (dominio).
+        """
         return DSubmission(
             id=model.id,
             questionnaire_id=model.questionnaire_id,
@@ -429,7 +578,9 @@ class DjangoSubmissionRepository(SubmissionRepository):
         )
 
     def _entity_to_model_data(self, entity: DSubmission) -> Dict[str, Any]:
-        """Convert Submission domain entity to model data dictionary."""
+        """
+        Map: Submission (dominio) → dict de campos para crear SubmissionModel.
+        """
         return {
             "id": entity.id,
             "questionnaire_id": entity.questionnaire_id,
@@ -442,7 +593,9 @@ class DjangoSubmissionRepository(SubmissionRepository):
         }
 
     def _update_model_from_entity(self, model: SubmissionModel, entity: DSubmission) -> None:
-        """Update existing SubmissionModel with data from Submission domain entity."""
+        """
+        Actualiza un SubmissionModel con datos de la entidad.
+        """
         model.questionnaire_id = entity.questionnaire_id
         model.tipo_fase = entity.tipo_fase
         model.regulador_id = entity.regulador_id
@@ -452,10 +605,15 @@ class DjangoSubmissionRepository(SubmissionRepository):
         model.fecha_cierre = entity.fecha_cierre
 
 
-# ------------------------------
-# Question (implementación Django)
-# ------------------------------
+# ==============================================================================
+#   Question (implementación Django)
+# ==============================================================================
+
 class DjangoQuestionRepository(QuestionRepository):
+    """
+    Repositorio de preguntas con utilidades de navegación (siguiente por orden).
+    """
+
     def get(self, id: UUID) -> Optional[DQ]:
         model = QuestionModel.objects.filter(id=id).prefetch_related("choices").first()
         return self._model_to_entity(model) if model else None
@@ -470,6 +628,9 @@ class DjangoQuestionRepository(QuestionRepository):
         return [self._model_to_entity(model) for model in models]
 
     def next_in_questionnaire(self, current_question_id: UUID) -> Optional[UUID]:
+        """
+        Obtiene el ID de la siguiente pregunta por orden dentro del mismo cuestionario.
+        """
         q = QuestionModel.objects.filter(id=current_question_id).only("questionnaire_id", "order").first()
         if not q:
             return None
@@ -485,6 +646,9 @@ class DjangoQuestionRepository(QuestionRepository):
         return next_q.id if next_q else None
 
     def find_next_by_order(self, questionnaire_id: UUID, order: int) -> Optional[DQ]:
+        """
+        Fallback: encuentra la siguiente pregunta por `order` dado.
+        """
         model = (
             QuestionModel.objects.filter(questionnaire_id=questionnaire_id, order__gt=order)
             .order_by("order")
@@ -496,18 +660,20 @@ class DjangoQuestionRepository(QuestionRepository):
     def get_by_id(self, id: str) -> Optional[QuestionModel]:
         """
         Retorna el modelo Question por id (UUID en str) o None si no existe.
-        No lanza excepción hacia la vista.
+        No lanza excepción hacia la vista (útil para endpoints).
         """
         try:
             return QuestionModel.objects.get(id=id)
         except QuestionModel.DoesNotExist:
             return None
 
-    # Explicit mapping functions
+    # ---- Mapeo ----
+
     def _model_to_entity(self, model: QuestionModel) -> DQ:
-        """Convert QuestionModel to Question domain entity."""
+        """
+        Map: QuestionModel → Question (dominio), incluyendo choices sólo si aplica.
+        """
         choices = []
-        # Solo incluir opciones para preguntas de tipo 'choice'
         if model.type == "choice" and hasattr(model, "choices"):
             for choice_model in model.choices.all():
                 choices.append(
@@ -530,28 +696,35 @@ class DjangoQuestionRepository(QuestionRepository):
         )
 
 
-# ------------------------------
-# Choice (implementación Django)
-# ------------------------------
+# ==============================================================================
+#   Choice (implementación Django)
+# ==============================================================================
+
 class DjangoChoiceRepository(ChoiceRepository):
+    """Repositorio mínimo de opciones de pregunta."""
+
     def get(self, id: UUID) -> Optional[DC]:
         model = ChoiceModel.objects.filter(id=id).only("id", "text", "branch_to").first()
         return self._model_to_entity(model) if model else None
 
-    # Explicit mapping functions
     def _model_to_entity(self, model: ChoiceModel) -> DC:
-        """Convert ChoiceModel to Choice domain entity."""
+        """Map: ChoiceModel → Choice (dominio)."""
         return DC(id=model.id, text=model.text, branch_to=model.branch_to_id)
 
 
-# --------------------------------------------
-# Actors (queries públicos/admin para catálogos)
-# --------------------------------------------
+# ==============================================================================
+#   Actors (consultas públicas/admin para catálogos)
+# ==============================================================================
+
 class DjangoActorRepository(ActorRepository):
+    """
+    Repositorio para catálogo de actores (proveedor/transportista/receptor).
+    Retorna modelos Django para uso directo con serializers manuales.
+    """
+
     def get(self, id: UUID):
         try:
             obj = ActorModel.objects.get(id=id, activo=True)
-            # devolvemos el modelo; los serializers manuales ya lo toleran
             return obj
         except ActorModel.DoesNotExist:
             return None
@@ -563,6 +736,9 @@ class DjangoActorRepository(ActorRepository):
         return list(qs.order_by("nombre")[:limit])
 
     def public_list(self, params):
+        """
+        Listado público con filtros básicos (tipo, search) y tope de 50 elementos.
+        """
         qs = ActorModel.objects.filter(activo=True)
         tipo = params.get("tipo")
         if tipo:
@@ -575,6 +751,9 @@ class DjangoActorRepository(ActorRepository):
         return qs.order_by("nombre")[:50]
 
     def admin_queryset(self, params):
+        """
+        QuerySet para vistas de administración con filtros por tipo/activo/búsqueda.
+        """
         qs = ActorModel.objects.all().order_by("nombre")
         tipo = params.get("tipo")
         if tipo:
@@ -584,13 +763,14 @@ class DjangoActorRepository(ActorRepository):
             qs = qs.filter(activo=True)
         search = params.get("search")
         if search:
-            qs = qs.filter(Q(nombre__icontains=search) | Q(documento__icontains=search))
+            qs = qs.filter(Q(nombre__icontains=search) | Q(documento__icontincontains=search))
         return qs
 
 
-# ---------------------------------------------------------
-# Questionnaire (implementación completa para uso en admin)
-# ---------------------------------------------------------
+# ==============================================================================
+#   Questionnaire (implementación completa para uso en admin)
+# ==============================================================================
+
 class DjangoQuestionnaireRepository(QuestionnaireRepository):
     """
     Repositorio de Cuestionarios para admin (dominio) y selector público.
@@ -600,11 +780,14 @@ class DjangoQuestionnaireRepository(QuestionnaireRepository):
       - list_minimal()                      -> para selector público
     """
 
-    # --------- Explicit mapping functions --------- #
+    # ---- Mapeo explícito de modelo a dominio ----
+
     def _model_to_entity(self, qn: QuestionnaireModel) -> DQn:
+        """
+        Map: QuestionnaireModel → Questionnaire (dominio), con sus preguntas/choices.
+        """
         questions = []
         for q in qn.questions.all().order_by("order").prefetch_related("choices"):
-            # Solo incluir opciones para preguntas de tipo 'choice'
             choices = []
             if q.type == "choice":
                 choices = [
@@ -632,8 +815,12 @@ class DjangoQuestionnaireRepository(QuestionnaireRepository):
             questions=tuple(questions),
         )
 
-    # --------- API Admin (dominio) --------- #
+    # ---- API Admin (dominio) ----
+
     def list_all(self) -> List[DQn]:
+        """
+        Lista todos los cuestionarios con sus preguntas y opciones ya prefetch-eadas.
+        """
         qs = (
             QuestionnaireModel.objects
             .prefetch_related(
@@ -647,6 +834,9 @@ class DjangoQuestionnaireRepository(QuestionnaireRepository):
         return [self._model_to_entity(x) for x in qs]
 
     def get_by_id(self, id: UUID) -> Optional[DQn]:
+        """
+        Obtiene un cuestionario por ID con su árbol de preguntas/choices prefetch-eado.
+        """
         qn = (
             QuestionnaireModel.objects
             .filter(id=id)
@@ -662,6 +852,16 @@ class DjangoQuestionnaireRepository(QuestionnaireRepository):
 
     @transaction.atomic
     def save(self, dq: DQn) -> DQn:
+        """
+        Upsert de cuestionario + sincronización de preguntas y choices asociados.
+
+        Estrategia:
+        - update_or_create para el cuestionario.
+        - Borrado de preguntas que ya no están presentes.
+        - Upsert de preguntas.
+        - Borrado de choices faltantes por pregunta.
+        - Upsert de choices (permite `branch_to` a cualquier pregunta existente).
+        """
         # Upsert del cuestionario
         qn, _created = QuestionnaireModel.objects.update_or_create(
             id=dq.id,
@@ -728,8 +928,12 @@ class DjangoQuestionnaireRepository(QuestionnaireRepository):
         )
         return self._model_to_entity(qn)
 
-    # --------- API público (selector) --------- #
+    # ---- API pública (selector) ----
+
     def list_minimal(self):
+        """
+        Listado mínimo de cuestionarios (id, title, version) para selectores UI.
+        """
         return (
             QuestionnaireModel.objects
             .only("id", "title", "version")
@@ -738,7 +942,12 @@ class DjangoQuestionnaireRepository(QuestionnaireRepository):
 
     @transaction.atomic
     def delete(self, id: UUID) -> bool:
-        """Delete a questionnaire by ID. Returns True if deleted, False if not found."""
+        """
+        Elimina un cuestionario por ID.
+
+        Returns:
+            True si se eliminó alguna fila; False si no se encontró.
+        """
         try:
             deleted_count, _ = QuestionnaireModel.objects.filter(id=id).delete()
             return deleted_count > 0

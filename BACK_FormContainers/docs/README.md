@@ -1,43 +1,33 @@
-# Documentación del Proyecto
+# Documentacion del Backend
 
-## 📌 General
-
-- [Descripción General](01_Descripcion_General.md)
+## General
+- [Descripcion General](01_Descripcion_General.md)
 - [Objetivos y Alcance](02_Objetivos_y_Alcance.md)
 
-## 📌 Requisitos
+## Requisitos
+- [Requisitos Funcionales](03_Requisitos/Requisitos_Funcionales.md)
+- [Requisitos No Funcionales](03_Requisitos/Requisitos_No_Funcionales.md)
+- [Criterios de Aceptacion](03_Requisitos/Criterios_de_Aceptacion.md)
 
-- [Funcionales](03_Requisitos/Requisitos_Funcionales.md)
-- [No Funcionales](03_Requisitos/Requisitos_No_Funcionales.md)
-- [Criterios de Aceptación](03_Requisitos/Criterios_de_Aceptacion.md)
-
-## 📌 Especificaciones Técnicas
-
+## Especificaciones Tecnicas
 - [Entorno de Desarrollo](04_Especificaciones_Tecnicas/Entorno_de_Desarrollo.md)
-- [Instalación y Configuración](04_Especificaciones_Tecnicas/Instalacion_y_Configuracion.md)
-- [Código Fuente (GitHub)](04_Especificaciones_Tecnicas/Codigo_Fuente_GitHub.md)
+- [Instalacion y Configuracion](04_Especificaciones_Tecnicas/Instalacion_y_Configuracion.md)
+- [Codigo Fuente y Estructura](04_Especificaciones_Tecnicas/Codigo_Fuente_GitHub.md)
 - [Plan de Soporte](04_Especificaciones_Tecnicas/Plan_de_Soporte.md)
-- [Monitorización y Logs](04_Especificaciones_Tecnicas/Monitorizacion_y_Logs.md)
-- [Seguridad Técnica](04_Especificaciones_Tecnicas/Seguridad_Tecnica.md)
+- [Monitorizacion y Logs](04_Especificaciones_Tecnicas/Monitorizacion_y_Logs.md)
+- [Plan de Seguridad Tecnica](04_Especificaciones_Tecnicas/Seguridad_Tecnica.md)
 
-## 📌 Arquitectura y Diseño
-
+## Arquitectura y Disenio
 - [Diagramas y Modelos](05_Arquitectura_y_Disenio/Diagramas_y_Modelos.md)
 - [Arquitectura y Patrones](05_Arquitectura_y_Disenio/Arquitectura_y_Patrones.md)
 
-## 📌 Gestión de Usuarios
-
+## Gestion de Usuarios
 - [Roles y Permisos](06_Gestion_de_Usuarios/Roles_y_Permisos.md)
-- [Mantenimiento y Actualizaciones](06_Gestion_de_Usuarios/Estrategia_de_Mantenimiento.md)
+- [Estrategia de Mantenimiento y Actualizaciones](06_Gestion_de_Usuarios/Estrategia_de_Mantenimiento.md)
 
-## 📌 Despliegue y Seguridad Usuario Final
-
+## Despliegue y Seguridad del Usuario Final
 - [Plan de Despliegue](07_Despliegue_y_Seguridad_Usuario_Final/Plan_de_Despliegue.md)
 - [Seguridad para Usuario Final](07_Despliegue_y_Seguridad_Usuario_Final/Seguridad_Usuario_Final.md)
 
-## 📌 Consideraciones Específicas
-
-- [RPA](08_Consideraciones_Especificas/RPA.md)
-- [APIs](08_Consideraciones_Especificas/APIs.md)
-- [Dashboards](08_Consideraciones_Especificas/Dashboards.md)
-- [Frontend y Backend Apps](08_Consideraciones_Especificas/Frontend_Backend_Apps.md)
+## Marco Conceptual
+- [Estandares de Referencia](08_Marco_Conceptual/Estandares.md)

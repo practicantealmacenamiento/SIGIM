@@ -1,28 +1,37 @@
+# -*- coding: utf-8 -*-
 """
-Excepciones de la capa de aplicación.
+Excepciones visibles desde la capa de aplicación.
 
-Esta capa puede re-exportar excepciones del dominio para conveniencia,
-pero no debe definir excepciones que sean usadas por el dominio.
+Objetivo:
+- Re-exportar las excepciones del dominio para que los casos de uso/servicios
+  no dependan directamente del paquete `app.domain.exceptions`.
+- No definir nuevas excepciones “de dominio” aquí.
+
+Notas:
+- Si en el futuro la aplicación necesita excepciones **propias** (p. ej. errores
+  de orquestación, timeouts de infraestructura, etc.), deberían vivir en la
+  capa de infraestructura o como “application errors” que no sean reutilizadas
+  por el dominio.
 """
 
-# Re-exportar excepciones del dominio para conveniencia de la capa de aplicación
+from __future__ import annotations
+
+# Re-export explícito de excepciones del dominio
 from app.domain.exceptions import (
-    DomainException,
-    DomainError,  # Alias
-    ValidationError,
-    EntityNotFoundError,
-    BusinessRuleViolationError,
-    InvalidOperationError,
-    InvariantViolationError,
+    DomainException as DomainException,
+    DomainError as DomainError,  # alias de compatibilidad
+    ValidationError as ValidationError,
+    EntityNotFoundError as EntityNotFoundError,
+    BusinessRuleViolationError as BusinessRuleViolationError,
+    InvalidOperationError as InvalidOperationError,
+    InvariantViolationError as InvariantViolationError,
 )
 
-# Mantener compatibilidad con el código existente
-DomainError = DomainException
-
+# API pública de este módulo (mapea 1:1 a lo re-exportado)
 __all__ = [
     "DomainException",
-    "DomainError",
-    "ValidationError", 
+    "DomainError",               # alias
+    "ValidationError",
     "EntityNotFoundError",
     "BusinessRuleViolationError",
     "InvalidOperationError",

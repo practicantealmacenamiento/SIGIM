@@ -14,7 +14,14 @@ class Migration(migrations.Migration):
             name='Actor',
             fields=[
                 ('id', models.UUIDField(primary_key=True, editable=False, serialize=False)),
-                ('tipo', models.CharField(choices=[('PROVEEDOR', 'Proveedor'), ('TRANSPORTISTA', 'Transportista'), ('RECEPTOR', 'Usuario que recibe')], db_index=True, max_length=20)),
+                ('tipo', models.CharField(
+                    choices=[
+                        ('PROVEEDOR', 'Proveedor'),
+                        ('TRANSPORTISTA', 'Transportista'),
+                        ('RECEPTOR', 'Usuario que recibe')
+                    ],
+                    db_index=True, max_length=20
+                )),
                 ('nombre', models.CharField(db_index=True, max_length=255)),
                 ('documento', models.CharField(blank=True, db_index=True, max_length=50, null=True)),
                 ('activo', models.BooleanField(default=True)),
@@ -27,13 +34,17 @@ class Migration(migrations.Migration):
             model_name='actor',
             index=models.Index(fields=['tipo', 'nombre'], name='actor_tipo_nombre_idx'),
         ),
-        migrations.AddConstraint(
-            model_name='actor',
-            constraint=models.UniqueConstraint(
-                fields=('tipo', 'documento'),
-                name='uniq_actor_tipo_documento',
-                condition=Q(('documento__isnull', False)) & ~Q(('documento', ''))
-            ),
+
+        # Sustituimos el UniqueConstraint condicional por índice único filtrado (SQL Server)
+        migrations.RunSQL(
+            sql="""
+                CREATE UNIQUE INDEX [uniq_actor_tipo_documento]
+                ON [actor]([tipo], [documento])
+                WHERE [documento] IS NOT NULL AND [documento] <> '';
+            """,
+            reverse_sql="""
+                DROP INDEX [uniq_actor_tipo_documento] ON [actor];
+            """,
         ),
 
         # --- Questionnaire: unicidad (title, version) ---
@@ -118,4 +129,5 @@ class Migration(migrations.Migration):
             field=models.JSONField(blank=True, default=dict),
         ),
     ]
+
 

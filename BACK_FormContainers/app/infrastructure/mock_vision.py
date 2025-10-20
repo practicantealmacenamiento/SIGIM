@@ -1,95 +1,109 @@
+# -*- coding: utf-8 -*-
 """
-Mock Text Extractor for Development
+Extractor de texto simulado (mock) para desarrollo y pruebas.
 
-This module provides a mock implementation of TextExtractorPort that can be used
-for development and testing when Google Cloud Vision is not available.
+Este módulo provee una implementación ficticia de `TextExtractorPort` que puede
+usarse durante el desarrollo o en tests cuando el proveedor real (p. ej. Google
+Cloud Vision) no está disponible.
+
+Características:
+- Genera respuestas verosímiles basadas en patrones comunes de OCR.
+- Permite validar reglas de negocio sin depender de servicios externos.
 """
 
 from __future__ import annotations
 
-from typing import Optional, List, Dict, Any
-import re
+from typing import Any, Dict, List, Optional
+import re  # reservado por si se requieren patrones adicionales
 
-from app.domain.ports import TextExtractorPort, ExtractionMode, ExtractionResult
+from app.domain.ports import ExtractionMode, ExtractionResult, TextExtractorPort
 from app.domain.exceptions import ExtractionError, InvalidImageError
+
+__all__ = ["MockTextExtractor", "DevelopmentTextExtractor"]
 
 
 class MockTextExtractor(TextExtractorPort):
     """
-    Mock text extractor that simulates OCR functionality for development.
-    
-    This adapter provides realistic mock responses based on common OCR patterns
-    and can be used for testing business logic without requiring external services.
+    Extractor de texto simulado para desarrollo.
+
+    Este adaptador devuelve respuestas de ejemplo basadas en el tamaño de la
+    imagen (en bytes) para emular comportamientos típicos de OCR.
     """
 
     def __init__(self, *, mode: str = "text", language_hints: Optional[List[str]] = None):
         self.mode = (mode or "text").lower()
         self.language_hints = list(language_hints or [])
 
+    # ------------------------------------------------------------------ #
+    #   API del puerto
+    # ------------------------------------------------------------------ #
+
     def extract_text(self, image_bytes: bytes) -> str:
-        """Extract mock text from image bytes."""
+        """Extrae texto simulado a partir de bytes de imagen."""
         if not self.validate_image(image_bytes):
             raise InvalidImageError(
-                message="Invalid image format or empty image data",
+                message="Formato de imagen inválido o datos vacíos.",
                 image_format="unknown",
-                image_size=len(image_bytes) if image_bytes else 0
+                image_size=len(image_bytes) if image_bytes else 0,
             )
-        
-        # Generate mock text based on image size to simulate realistic behavior
+
+        # Generar texto simulado en función del tamaño para variar respuestas
         image_size = len(image_bytes)
-        
+
         if image_size < 1000:
-            return "ABC123"  # Small image, simple text
+            return "ABC123"  # Imagen pequeña → texto simple (placa)
         elif image_size < 10000:
-            return "PLACA ABC123 CONTENEDOR MSCU1234567"  # Medium image
+            return "PLACA ABC123 CONTENEDOR MSCU1234567"  # Imagen mediana
         else:
             return "DOCUMENTO TRANSPORTE\nPLACA: ABC123\nCONTENEDOR: MSCU1234567\nPRECINTO: TDM38816"
 
     def extract_text_with_mode(
-        self, 
-        image_bytes: bytes, 
-        mode: ExtractionMode = ExtractionMode.TEXT
+        self,
+        image_bytes: bytes,
+        mode: ExtractionMode = ExtractionMode.TEXT,
     ) -> str:
-        """Extract text using a specific extraction mode."""
+        """Extrae texto usando un modo específico (TEXT/DOCUMENT/HANDWRITING)."""
         if not self.validate_image(image_bytes):
             raise InvalidImageError(
-                message="Invalid image format or empty image data",
+                message="Formato de imagen inválido o datos vacíos.",
                 image_format="unknown",
-                image_size=len(image_bytes) if image_bytes else 0
+                image_size=len(image_bytes) if image_bytes else 0,
             )
-        
+
         base_text = self.extract_text(image_bytes)
-        
+
         if mode == ExtractionMode.DOCUMENT:
-            # Document mode returns more structured text
+            # Modo documento: añade cabecera y fecha simulada
             return f"DOCUMENTO OFICIAL\n{base_text}\nFECHA: 2024-01-15"
         elif mode == ExtractionMode.HANDWRITING:
-            # Handwriting mode might have lower accuracy
+            # Manuscrito: simula menor precisión
             return base_text.replace("123", "1Z3").replace("ABC", "A8C")
         else:
             return base_text
 
     def extract_text_detailed(
-        self, 
+        self,
         image_bytes: bytes,
         mode: ExtractionMode = ExtractionMode.TEXT,
-        language_hints: Optional[List[str]] = None
+        language_hints: Optional[List[str]] = None,
     ) -> ExtractionResult:
-        """Extract text with detailed information including confidence and location."""
+        """
+        Extrae texto con información adicional: confianza, bounding boxes y metadatos.
+        """
         if not self.validate_image(image_bytes):
             raise InvalidImageError(
-                message="Invalid image format or empty image data",
+                message="Formato de imagen inválido o datos vacíos.",
                 image_format="unknown",
-                image_size=len(image_bytes) if image_bytes else 0
+                image_size=len(image_bytes) if image_bytes else 0,
             )
-        
+
         text = self.extract_text_with_mode(image_bytes, mode)
-        
-        # Mock bounding boxes
+
+        # Generar bounding boxes simulados por palabra
         words = text.split()
         bounding_boxes = []
         x_offset = 10
-        
+
         for word in words:
             bounding_boxes.append({
                 "text": word,
@@ -97,116 +111,126 @@ class MockTextExtractor(TextExtractorPort):
                     {"x": x_offset, "y": 10},
                     {"x": x_offset + len(word) * 8, "y": 10},
                     {"x": x_offset + len(word) * 8, "y": 30},
-                    {"x": x_offset, "y": 30}
-                ]
+                    {"x": x_offset, "y": 30},
+                ],
             })
             x_offset += len(word) * 8 + 5
-        
+
         return ExtractionResult(
             text=text,
-            confidence=0.95,  # Mock high confidence
+            confidence=0.95,  # Confianza simulada alta
             bounding_boxes=bounding_boxes,
             metadata={
                 "mode": mode.value,
                 "language_hints": language_hints or self.language_hints,
-                "mock": True
-            }
+                "mock": True,
+            },
         )
 
     def extract_structured_text(
-        self, 
+        self,
         image_bytes: bytes,
-        language_hints: Optional[List[str]] = None
+        language_hints: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Extract structured text for complex documents."""
+        """
+        Extrae texto estructurado para documentos complejos (mock).
+        Retorna estructura con páginas/bloques/párrafos/palabras y confianza simulada.
+        """
         if not self.validate_image(image_bytes):
             raise InvalidImageError(
-                message="Invalid image format or empty image data",
+                message="Formato de imagen inválido o datos vacíos.",
                 image_format="unknown",
-                image_size=len(image_bytes) if image_bytes else 0
+                image_size=len(image_bytes) if image_bytes else 0,
             )
-        
+
         text = self.extract_text(image_bytes)
         words = text.split()
-        
+
         return {
             "full_text": text,
             "pages": [{
                 "blocks": [{
                     "paragraphs": [{
                         "words": [{"text": word, "confidence": 0.95} for word in words],
-                        "confidence": 0.95
+                        "confidence": 0.95,
                     }],
-                    "confidence": 0.95
-                }]
+                    "confidence": 0.95,
+                }],
             }],
+            # Estructuras planas adicionales para facilitar tests
             "blocks": [{
                 "paragraphs": [{
                     "words": [{"text": word, "confidence": 0.95} for word in words],
-                    "confidence": 0.95
+                    "confidence": 0.95,
                 }],
-                "confidence": 0.95
+                "confidence": 0.95,
             }],
             "paragraphs": [{
                 "words": [{"text": word, "confidence": 0.95} for word in words],
-                "confidence": 0.95
+                "confidence": 0.95,
             }],
-            "words": words
+            "words": words,
         }
 
     def validate_image(self, image_bytes: bytes) -> bool:
-        """Validate if an image is processable by the OCR service."""
+        """
+        Valida si la imagen es procesable por el servicio OCR (mock).
+
+        Comprobaciones:
+        - No vacía.
+        - Prefiere detectar firmas mágicas de formatos comunes (JPEG, PNG, GIF, WebP, BMP).
+        - Para fines de mock, acepta cualquier buffer no vacío.
+        """
         if not image_bytes or len(image_bytes) == 0:
             return False
-        
-        # Basic validation - check if it looks like image data
-        # Most image formats start with specific magic bytes
+
+        # Firmas mágicas de formatos típicos
         image_signatures = [
-            b'\xff\xd8\xff',  # JPEG
-            b'\x89PNG\r\n\x1a\n',  # PNG
-            b'GIF87a',  # GIF87a
-            b'GIF89a',  # GIF89a
-            b'RIFF',  # WebP (starts with RIFF)
-            b'BM',  # BMP
+            b"\xff\xd8\xff",          # JPEG
+            b"\x89PNG\r\n\x1a\n",     # PNG
+            b"GIF87a",                # GIF87a
+            b"GIF89a",                # GIF89a
+            b"RIFF",                  # WebP (encabezado RIFF)
+            b"BM",                    # BMP
         ]
-        
+
         for signature in image_signatures:
             if image_bytes.startswith(signature):
                 return True
-        
-        # For mock purposes, also accept any non-empty bytes
+
+        # En modo simulado aceptamos cualquier buffer no vacío
         return len(image_bytes) > 0
 
 
 class DevelopmentTextExtractor(MockTextExtractor):
     """
-    Development-specific text extractor with predefined responses.
-    
-    This extractor provides specific mock responses that are useful for
-    testing business rules and validation logic.
+    Extractor de texto para desarrollo con respuestas predefinidas.
+
+    Útil para probar reglas de negocio/validaciones generando distintos
+    patrones de salida a partir del tamaño del archivo.
     """
 
     def extract_text(self, image_bytes: bytes) -> str:
-        """Extract text with development-specific patterns."""
+        """Extrae texto con patrones específicos para desarrollo."""
         if not self.validate_image(image_bytes):
             raise InvalidImageError(
-                message="Invalid image format or empty image data",
+                message="Formato de imagen inválido o datos vacíos.",
                 image_format="unknown",
-                image_size=len(image_bytes) if image_bytes else 0
+                image_size=len(image_bytes) if image_bytes else 0,
             )
-        
-        # Use image size as a simple hash to return different mock responses
+
+        # Usar el tamaño como “hash” simple para seleccionar respuesta
         image_size = len(image_bytes)
-        
+
         responses = [
-            "ABC123",  # Valid plate
-            "MSCU1234567",  # Valid container
-            "TDM38816",  # Valid seal
-            "PLACA ABC123 CONTENEDOR MSCU1234567",  # Multiple elements
+            "ABC123",  # Placa válida
+            "MSCU1234567",  # Contenedor válido
+            "TDM38816",  # Precinto válido
+            "PLACA ABC123 CONTENEDOR MSCU1234567",  # Múltiples elementos
             "DOCUMENTO TRANSPORTE\nPLACA: DEF456\nCONTENEDOR: TCLU9876543\nPRECINTO: XYZ12345",
-            "INVALID TEXT NO PATTERNS",  # No valid patterns
-            "123456789",  # Numbers only
-            "ABCDEFGH",  # Letters only
+            "INVALID TEXT NO PATTERNS",  # Sin patrones reconocibles
+            "123456789",  # Solo números
+            "ABCDEFGH",  # Solo letras
         ]
-        
+
         return responses[image_size % len(responses)]

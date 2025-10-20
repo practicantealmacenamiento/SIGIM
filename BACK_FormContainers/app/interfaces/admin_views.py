@@ -12,10 +12,10 @@ from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 
-# Autenticación unificada
+# Autenticación unificada (headers: Authorization: Bearer|Token <key>)
 from .auth import BearerOrTokenAuthentication
 
-# Infra / Serializers existentes en tu proyecto
+# Infraestructura (modelos + serializers manuales, NO ModelSerializer)
 from app.infrastructure.models import Questionnaire, Question, Choice, Actor
 from app.infrastructure.serializers import (
     ActorModelSerializer,
@@ -23,15 +23,26 @@ from app.infrastructure.serializers import (
     QuestionnaireModelSerializer,
 )
 
-# =========================
-# Utilidades locales
-# =========================
+# =========================================================
+# Utilidades internas de validación/normalización
+# =========================================================
 def _validate_question_type(t: Optional[str]) -> str:
+    """
+    Garantiza que el tipo de pregunta sea válido según el catálogo del modelo.
+    Fallback a 'text' si viene vacío o no permitido.
+    """
     allowed = {k for (k, _) in Question.TYPE_CHOICES}
     t = (t or "text").strip()
     return t if t in allowed else "text"
 
+
 def _normalize_semantic(s) -> str:
+    """
+    Normaliza la etiqueta semántica:
+    - None, '', 'none' -> 'none'
+    - Cualquier otro valor fuera del catálogo -> 'none'
+    Nunca persistimos NULL en DB; siempre 'none'.
+    """
     if s is None:
         return "none"
     s = (str(s) or "").strip().lower()
@@ -41,9 +52,9 @@ def _normalize_semantic(s) -> str:
     return s if s in allowed else "none"
 
 
-# =========================
-# Paginación admin
-# =========================
+# =========================================================
+# Paginación admin (configurable vía ?page_size=)
+# =========================================================
 class AdminPageNumberPagination(PageNumberPagination):
     page_size_query_param = "page_size"
     max_page_size = 200
@@ -51,18 +62,20 @@ class AdminPageNumberPagination(PageNumberPagination):
 
 
 # =========================================================
-# ADMIN — ACTORES
+# ADMIN — ACTORES (CRUD simple de catálogo)
 # =========================================================
 class AdminActorViewSet(viewsets.ViewSet):
     """
     Gestión de actores (proveedores/transportistas/receptores) para admin.
-    Serializadores manuales; sin lógica de negocio en la vista.
+
+    ✔ Serializadores manuales (sin ModelSerializer)
+    ✔ Sin lógica de dominio/negocio en la vista
+    ✔ Filtros por nombre/documento y tipo
     """
     authentication_classes = [BearerOrTokenAuthentication]
     permission_classes = [IsAdminUser]
 
     def _apply_filters(self, qs, request):
-        """Aplica filtros de búsqueda por nombre/documento y por tipo."""
         raw_search = (
             request.query_params.get("search")
             or request.query_params.get("q")
@@ -110,6 +123,7 @@ class AdminActorViewSet(viewsets.ViewSet):
 
     @extend_schema(tags=["admin/actors"], summary="Crear actor")
     def create(self, request):
+        # Usamos el serializer manual como validador de estructura básica.
         ser = ActorModelSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = getattr(ser, "validated_data", request.data)
@@ -129,6 +143,7 @@ class AdminActorViewSet(viewsets.ViewSet):
         except Actor.DoesNotExist:
             return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
 
+        # Campos opcionales
         nombre = request.data.get("nombre", None)
         tipo = request.data.get("tipo", None)
         documento = request.data.get("documento", request.data.get("nit", None))
@@ -157,9 +172,13 @@ class AdminActorViewSet(viewsets.ViewSet):
 
 
 # =========================================================
-# ADMIN — USERS (utilidad básica)
+# ADMIN — USERS (utilidad operativa básica)
 # =========================================================
 class AdminUserSerializer(serializers.Serializer):
+    """
+    Serializer manual (sin ModelSerializer) para exponer/crear/actualizar usuarios.
+    No implementa lógica de negocio; solo mapea y encripta password al crear/actualizar.
+    """
     id = serializers.IntegerField(read_only=True)
     username = serializers.CharField()
     email = serializers.EmailField(required=False, allow_blank=True)
@@ -187,6 +206,9 @@ class AdminUserSerializer(serializers.Serializer):
 
 
 class AdminUserViewSet(viewsets.ViewSet):
+    """
+    CRUD mínimo de usuarios para administración.
+    """
     authentication_classes = [BearerOrTokenAuthentication]
     permission_classes = [IsAdminUser]
 
@@ -247,28 +269,49 @@ class AdminUserViewSet(viewsets.ViewSet):
 
 
 # =========================================================
-# ADMIN — CUESTIONARIOS
+# ADMIN — CUESTIONARIOS (lista/detalle + create/update parcial)
 # =========================================================
 class AdminQuestionnaireViewSet(mixins.ListModelMixin,
                                 mixins.RetrieveModelMixin,
                                 viewsets.GenericViewSet):
     """
-    Listado + detalle + creación y actualización parcial de cuestionarios con sus preguntas/opciones.
-    - PUT y PATCH se tratan como parciales (no requiere enviar todo).
-    - Se resuelve "order" evitando colisiones con un SHIFT en dos fases (OFFSET grande).
-    - `semantic_tag` nunca se persiste como NULL (se normaliza a "none").
+    CRUD administrativo de cuestionarios con preguntas/opciones.
+
+    ✔ PUT/PATCH tratados como parciales (no obligamos a mandar todo)
+    ✔ Sin lógica de negocio (sólo consistencia/orden)
+    ✔ SHIFT “en dos fases” con OFFSET grande para evitar colisiones en
+      UNIQUE(questionnaire_id, order) al insertar o mover preguntas
+    ✔ `semantic_tag` nunca se guarda como NULL (normalización a 'none')
     """
     authentication_classes = [BearerOrTokenAuthentication]
     permission_classes = [IsAdminUser]
 
-    BIG_OFFSET = 1_000_000  # para evitar colisiones temporales en UNIQUE(questionnaire_id, order)
+    # OFFSET grande para el algoritmo de reordenamiento a prueba de UNIQUE
+    BIG_OFFSET = 1_000_000
 
-    # ---------- Helper para desplazar bloques de orden ----------
-    def _shift_range(self, *, qn: Questionnaire, start: int, end: Optional[int], direction: str, exclude_id: Optional[str] = None) -> None:
+    # ---------- Helper de reordenamiento seguro ----------
+    def _shift_range(
+        self,
+        *,
+        qn: Questionnaire,
+        start: int,
+        end: Optional[int],
+        direction: str,
+        exclude_id: Optional[str] = None,
+    ) -> None:
         """
-        Desplaza en +1 (direction='up') o -1 (direction='down') el bloque [start..end]
-        (si end es None, aplica a [start..∞)).
-        Hace el desplazamiento en DOS FASES con un OFFSET grande para no violar la UNIQUE.
+        Desplaza un bloque de preguntas [start..end] en +1 ('up') o -1 ('down').
+        Si `end` es None, aplica a [start..∞).
+        Implementa DOS FASES con OFFSET grande (BIG_OFFSET) para no violar
+        la constraint UNIQUE(questionnaire_id, order).
+
+        Ejemplo (subir):
+          1) alejamos: order = order + OFF
+          2) acercamos: order = order - (OFF - 1)  -> neto +1
+
+        Ejemplo (bajar):
+          1) alejamos: order = order + OFF
+          2) acercamos: order = order - (OFF + 1)  -> neto -1
         """
         qs = Question.objects.filter(questionnaire=qn, order__gte=start)
         if end is not None:
@@ -282,14 +325,13 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
         OFF = self.BIG_OFFSET
         # Fase 1: alejar
         qs.update(order=F("order") + OFF)
-        # Fase 2: dejar en su valor final
+        # Fase 2: establecer el valor final neto
         if direction == "up":
-            # queremos +1 neto: (order+OFF) - (OFF-1) = order + 1
             qs.update(order=F("order") - (OFF - 1))
         else:
-            # queremos -1 neto: (order+OFF) - (OFF+1) = order - 1
             qs.update(order=F("order") - (OFF + 1))
 
+    # ---------- Queryset base (lista) ----------
     def get_queryset(self):
         return (
             Questionnaire.objects
@@ -298,6 +340,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
             .order_by("title")
         )
 
+    # ---------- Listar ----------
     @extend_schema(
         tags=["admin/questionnaires"],
         summary="Listar cuestionarios (admin)",
@@ -318,6 +361,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
         data = QuestionnaireListItemSerializer(page, many=True).data
         return paginator.get_paginated_response(data)
 
+    # ---------- Detalle ----------
     @extend_schema(
         tags=["admin/questionnaires"],
         summary="Detalle de un cuestionario (admin)",
@@ -348,9 +392,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
             return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
         return Response(QuestionnaireModelSerializer(qn).data)
 
-    # ------------------------
-    # CREATE (POST)
-    # ------------------------
+    # ---------- Crear ----------
     @extend_schema(
         tags=["admin/questionnaires"],
         summary="Crear cuestionario (admin)",
@@ -369,9 +411,10 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
 
         qn = Questionnaire.objects.create(title=title, version=version or "v1", timezone=timezone or "America/Bogota")
 
-        # Si vienen preguntas, crearlas
+        # Preguntas opcionales en la carga inicial
         if isinstance(payload.get("questions"), list):
             branch_links: List[Tuple[Choice, Optional[str]]] = []
+
             for idx, qd in enumerate(payload["questions"]):
                 text = (qd.get("text") or "").strip()
                 if not text:
@@ -383,7 +426,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
                 file_mode = (qd.get("file_mode") or "image_only").strip()
                 semantic_tag = _normalize_semantic(qd.get("semantic_tag"))
 
-                # --- ORDEN con SHIFT seguro ---
+                # Orden seguro: si viene order, desplazamos >= order; si no, max+1
                 incoming_order = qd.get("order")
                 try:
                     new_order = int(incoming_order) if incoming_order is not None else None
@@ -394,7 +437,6 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
                     max_order = qn.questions.aggregate(m=Max("order"))["m"]
                     safe_order = (max_order if max_order is not None else -1) + 1
                 else:
-                    # Desplaza todo lo >= new_order en +1 (dos fases)
                     self._shift_range(qn=qn, start=new_order, end=None, direction="up")
                     safe_order = new_order
 
@@ -408,7 +450,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
                     semantic_tag=semantic_tag,
                 )
 
-                # choices si vienen
+                # Opciones (si vienen)
                 if isinstance(qd.get("choices"), list):
                     for cd in qd["choices"]:
                         ctext = (cd.get("text") or "").strip()
@@ -419,14 +461,14 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
                         cobj = Choice.objects.create(question=qobj, text=ctext, branch_to=None)
                         branch_links.append((cobj, branch_to))
 
-            # resolver branch_to luego de crear todas
+            # Resolver branch_to cuando todas las preguntas existen
             questions_index = {str(q.id): q for q in Questionnaire.objects.get(pk=qn.id).questions.all()}
             for cobj, target in branch_links:
                 if target and target in questions_index:
                     cobj.branch_to = questions_index[target]
                     cobj.save()
 
-        # responder
+        # Respuesta fresca
         fresh = (
             Questionnaire.objects.filter(pk=qn.id)
             .prefetch_related(
@@ -440,9 +482,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
         )
         return Response(QuestionnaireModelSerializer(fresh).data, status=201)
 
-    # ------------------------
-    # UPDATE / PATCH (parciales)
-    # ------------------------
+    # ---------- Update parcial (PUT/PATCH tratan igual: parciales) ----------
     @extend_schema(
         tags=["admin/questionnaires"], summary="Actualizar (PUT parcial)", request=serializers.DictField,
         responses={200: QuestionnaireModelSerializer, 400: OpenApiResponse(description="Error de validación")}
@@ -466,9 +506,9 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
         obj.delete()
         return Response(status=204)
 
-    # =========================
-    #   Upsert con SHIFT de orden
-    # =========================
+    # =====================================================
+    #   Upsert con resolución de orden (SHIFT en dos fases)
+    # =====================================================
     @transaction.atomic
     def _upsert(self, *, pk: str, payload: dict, is_partial: bool) -> Response:
         qn = (
@@ -479,7 +519,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
         if not qn:
             return Response({"detail": "No encontrado."}, status=404)
 
-        # -------- Metadatos (sólo presentes)
+        # ---- Metadatos sólo si vienen (PUT/PATCH parciales)
         if "title" in payload:
             title = (payload.get("title") or "").strip()
             if not title:
@@ -497,7 +537,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
             qn.timezone = tz
         qn.save()
 
-        # -------- Preguntas (sólo si vienen y son lista)
+        # ---- Preguntas si vienen como lista
         if "questions" in payload and isinstance(payload.get("questions"), list):
             existing_qs = {str(q.id): q for q in qn.questions.all()}
             seen_qids: set[str] = set()
@@ -506,7 +546,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
             for qd in payload["questions"]:
                 qid = (qd.get("id") or "").strip() or None
 
-                # Presencia
+                # Presencias (para PUT/PATCH parciales)
                 text_present = "text" in qd
                 type_present = "type" in qd
                 req_present = "required" in qd
@@ -514,7 +554,6 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
                 sem_present = "semantic_tag" in qd
                 fm_present = "file_mode" in qd
 
-                # Valores normalizados
                 raw_text = qd.get("text")
                 text = (raw_text if raw_text is not None else "").strip()
                 qtype = _validate_question_type(qd.get("type") if type_present else None)
@@ -522,7 +561,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
                 semantic_tag = _normalize_semantic(qd.get("semantic_tag") if sem_present else None)
                 file_mode = (qd.get("file_mode") or "").strip() if fm_present else None
 
-                # Orden entrante
+                # Orden entrante -> intentar mover con SHIFT si cambia
                 new_order: Optional[int] = None
                 if order_present:
                     try:
@@ -531,7 +570,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
                         new_order = None
 
                 if qid and qid in existing_qs:
-                    # === UPDATE con resolución de colisiones ===
+                    # ===== UPDATE existente =====
                     qobj = existing_qs[qid]
                     old_order = qobj.order
 
@@ -549,7 +588,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
                     if fm_present:
                         qobj.file_mode = file_mode or "image_only"
 
-                    # Si cambia de posición, desplazo el bloque afectado y luego asigno el nuevo order
+                    # Si cambia la posición, desplazamos bloque afectado
                     if new_order is not None and new_order != old_order:
                         if new_order < old_order:
                             # Sube: incrementa [new_order .. old_order-1]
@@ -562,7 +601,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
                     qobj.save()
 
                 else:
-                    # === CREATE con resolución de colisiones ===
+                    # ===== CREATE nueva =====
                     if text == "":
                         return Response({"questions": "Cada pregunta nueva debe tener 'text'."}, status=400)
 
@@ -571,7 +610,6 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
                         max_order = qn.questions.aggregate(m=Max("order"))["m"]
                         safe_order = (max_order if max_order is not None else -1) + 1
                     else:
-                        # Empuja todo lo >= new_order en +1
                         self._shift_range(qn=qn, start=new_order, end=None, direction="up")
                         safe_order = new_order
 
@@ -588,7 +626,7 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
 
                 seen_qids.add(qid)
 
-                # Choices si vienen
+                # ---- Opciones si vienen como lista
                 if "choices" in qd and isinstance(qd.get("choices"), list):
                     existing_cs = {str(c.id): c for c in qobj.choices.all()}
                     seen_cids: set[str] = set()
@@ -607,7 +645,8 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
                                     if ctext == "":
                                         return Response({"choices": "Cada opción debe tener texto."}, status=400)
                                     cobj.text = ctext
-                            cobj.branch_to = None  # se resuelve luego
+                            # branch_to se resuelve luego de tener todas las preguntas
+                            cobj.branch_to = None
                             cobj.save()
                         else:
                             if ctext == "":
@@ -618,12 +657,12 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
                         seen_cids.add(cid)
                         branch_links.append((cobj, branch_to))
 
-                    # borrar no vistas
+                    # Eliminar opciones no vistas (cuando mandas lista completa)
                     for cid, cobj in list(existing_cs.items()):
                         if cid not in seen_cids:
                             cobj.delete()
 
-            # borrar preguntas no vistas
+            # Eliminar preguntas no vistas (cuando mandas lista completa)
             for qid, qobj in list(existing_qs.items()):
                 if qid not in seen_qids:
                     qobj.delete()

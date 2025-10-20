@@ -1,18 +1,26 @@
 """
-Traductor de excepciones de dominio a respuestas HTTP.
+Traductor de excepciones de dominio a respuestas HTTP (capa de interfaces).
 
-Este módulo maneja la traducción de excepciones específicas del dominio
-a respuestas HTTP apropiadas, manteniendo la separación entre capas.
+- No acopla dominio a DRF: sólo aquí conocemos Response/HTTP.
+- Ofrece:
+  * DomainExceptionTranslator: mapea DomainException -> Response
+  * translate_domain_exception(): helper
+  * handle_domain_exception_decorator: decorador para vistas puntuales
+  * DomainExceptionMiddleware: captura DomainException a nivel middleware
+  * custom_exception_handler: para integrarlo con DRF (REST_FRAMEWORK.EXCEPTION_HANDLER)
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Dict, Any, Optional
+import uuid
+from typing import Dict, Any, Optional, Type
 
 from rest_framework import status
 from rest_framework.response import Response
+from rest_framework.views import exception_handler as drf_default_exception_handler
 
+# Importa únicamente tipos de dominio; NO modelos ni infra.
 from app.domain.exceptions import (
     DomainException,
     ValidationError,
@@ -35,14 +43,15 @@ logger = logging.getLogger(__name__)
 
 class DomainExceptionTranslator:
     """
-    Traductor centralizado de excepciones de dominio a respuestas HTTP.
-    
-    Mapea excepciones específicas del dominio a códigos de estado HTTP apropiados
-    y formatos de respuesta consistentes.
+    Traductor centralizado de DomainException -> HTTP Response.
+
+    Notas:
+    - Sólo serializa información segura para el cliente.
+    - Incluye un `error_id` (UUID) para correlación en logs.
     """
 
     # Mapeo de tipos de excepción a códigos de estado HTTP
-    _STATUS_CODE_MAP = {
+    _STATUS_CODE_MAP: Dict[Type[DomainException], int] = {
         ValidationError: status.HTTP_400_BAD_REQUEST,
         EntityNotFoundError: status.HTTP_404_NOT_FOUND,
         BusinessRuleViolationError: status.HTTP_400_BAD_REQUEST,
@@ -58,8 +67,8 @@ class DomainExceptionTranslator:
         NotificationNotFoundError: status.HTTP_404_NOT_FOUND,
     }
 
-    # Mapeo de tipos de excepción a tipos de error para el cliente
-    _ERROR_TYPE_MAP = {
+    # Mapeo de tipos de excepción a tipos de error legibles por el cliente
+    _ERROR_TYPE_MAP: Dict[Type[DomainException], str] = {
         ValidationError: "validation_error",
         EntityNotFoundError: "not_found_error",
         BusinessRuleViolationError: "business_rule_error",
@@ -78,148 +87,156 @@ class DomainExceptionTranslator:
     @classmethod
     def translate(cls, exception: DomainException) -> Response:
         """
-        Traduce una excepción de dominio a una respuesta HTTP apropiada.
-        
-        Args:
-            exception: La excepción de dominio a traducir
-            
-        Returns:
-            Response: Respuesta HTTP con código de estado y formato apropiados
+        Traduce una DomainException a Response DRF con payload consistente.
         """
-        # Obtener código de estado HTTP
         status_code = cls._get_status_code(exception)
-        
-        # Obtener tipo de error para el cliente
         error_type = cls._get_error_type(exception)
-        
-        # Construir respuesta
-        response_data = cls._build_response_data(exception, error_type)
-        
-        # Log del error para debugging
-        cls._log_exception(exception, status_code)
-        
+        error_id = str(uuid.uuid4())
+
+        response_data = cls._build_response_data(exception, error_type, error_id)
+        cls._log_exception(exception, status_code, error_id)
+
         return Response(response_data, status=status_code)
+
+    # ---------- Helpers internos ----------
 
     @classmethod
     def _get_status_code(cls, exception: DomainException) -> int:
-        """Obtiene el código de estado HTTP apropiado para la excepción."""
-        exception_type = type(exception)
-        return cls._STATUS_CODE_MAP.get(exception_type, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return cls._STATUS_CODE_MAP.get(type(exception), status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @classmethod
     def _get_error_type(cls, exception: DomainException) -> str:
-        """Obtiene el tipo de error para el cliente."""
-        exception_type = type(exception)
-        return cls._ERROR_TYPE_MAP.get(exception_type, "domain_error")
+        return cls._ERROR_TYPE_MAP.get(type(exception), "domain_error")
 
     @classmethod
-    def _build_response_data(cls, exception: DomainException, error_type: str) -> Dict[str, Any]:
+    def _build_response_data(cls, exception: DomainException, error_type: str, error_id: str) -> Dict[str, Any]:
         """
-        Construye los datos de respuesta para la excepción.
-        
-        Args:
-            exception: La excepción de dominio
-            error_type: El tipo de error para el cliente
-            
-        Returns:
-            Dict con los datos de respuesta
-        """
-        response_data = {
-            "error": str(exception),
-            "type": error_type,
+        Payload estándar:
+        {
+          "error_id": "<uuid>",
+          "type": "validation_error",
+          "code": "SOME_CODE",        # si la excepción define .code
+          "error": "Mensaje...",
+          "details": {...}|[...]|"...",  # si define .details
+          "extra": {...}              # si define .extra (no sensible)
         }
-        
-        # Incluir detalles adicionales si están disponibles
-        if hasattr(exception, 'details') and exception.details:
-            response_data["details"] = exception.details
-            
-        return response_data
+        """
+        data: Dict[str, Any] = {
+            "error_id": error_id,
+            "type": error_type,
+            "error": str(exception) if str(exception) else type(exception).__name__,
+        }
+
+        # Campos opcionales habituales en excepciones de dominio
+        code = getattr(exception, "code", None)
+        if code:
+            data["code"] = code
+
+        details = getattr(exception, "details", None)
+        if details:
+            data["details"] = details
+
+        extra = getattr(exception, "extra", None)
+        if extra and isinstance(extra, dict):
+            data["extra"] = extra
+
+        return data
 
     @classmethod
-    def _log_exception(cls, exception: DomainException, status_code: int) -> None:
-        """Log de la excepción para debugging y monitoreo."""
+    def _log_exception(cls, exception: DomainException, status_code: int, error_id: str) -> None:
+        """
+        Log estructurado para correlación. Si usas Sentry/ELK, el error_id ayuda al soporte.
+        """
         log_level = logging.WARNING if status_code < 500 else logging.ERROR
-        
         logger.log(
             log_level,
-            f"Domain exception translated to HTTP {status_code}: {type(exception).__name__}: {exception}",
+            "Domain exception -> HTTP %(status)s [%(error_id)s]: %(ex_type)s: %(message)s",
             extra={
-                "exception_type": type(exception).__name__,
-                "status_code": status_code,
-                "exception_details": getattr(exception, 'details', None),
-            }
+                "status": status_code,
+                "error_id": error_id,
+                "ex_type": type(exception).__name__,
+                "message": str(exception),
+                "exception_details": getattr(exception, "details", None),
+                "exception_code": getattr(exception, "code", None),
+            },
+            exc_info=(status_code >= 500),  # adjunta traceback sólo en 5xx
         )
 
 
+# ---------------------------
+# API pública del módulo
+# ---------------------------
+
 def translate_domain_exception(exception: DomainException) -> Response:
-    """
-    Función de conveniencia para traducir excepciones de dominio.
-    
-    Args:
-        exception: La excepción de dominio a traducir
-        
-    Returns:
-        Response: Respuesta HTTP apropiada
-    """
+    """Función de conveniencia: DomainException -> Response."""
     return DomainExceptionTranslator.translate(exception)
 
 
 def handle_domain_exception_decorator(view_func):
     """
-    Decorator para manejar automáticamente excepciones de dominio en vistas.
-    
-    Usage:
+    Decorador para vistas/handlers que lanzen DomainException.
+    Ejemplo:
         @handle_domain_exception_decorator
         def my_view(request):
-            # código que puede lanzar excepciones de dominio
-            pass
+            service.do()  # puede lanzar DomainException
+            ...
     """
     def wrapper(*args, **kwargs):
         try:
             return view_func(*args, **kwargs)
         except DomainException as e:
             return translate_domain_exception(e)
-    
     return wrapper
 
 
 class DomainExceptionMiddleware:
     """
-    Middleware para capturar y traducir excepciones de dominio automáticamente.
-    
-    Este middleware captura excepciones de dominio no manejadas y las traduce
-    a respuestas HTTP apropiadas de forma automática.
+    Middleware para capturar DomainException en toda la app.
+
+    settings.py:
+        MIDDLEWARE = [
+            ...,
+            "app.interfaces.exception_handlers.DomainExceptionMiddleware",
+        ]
     """
-    
+
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
         try:
-            response = self.get_response(request)
-            return response
+            return self.get_response(request)
         except DomainException as e:
             return translate_domain_exception(e)
 
     def process_exception(self, request, exception):
         """
-        Procesa excepciones no capturadas durante el procesamiento de la vista.
-        
-        Args:
-            request: La request HTTP
-            exception: La excepción lanzada
-            
-        Returns:
-            Response si es una excepción de dominio, None en caso contrario
+        Compat con el hook de middlewares que implementan process_exception.
         """
         if isinstance(exception, DomainException):
             return translate_domain_exception(exception)
         return None
 
 
+def custom_exception_handler(exc, context):
+    """
+    Handler para DRF: prioriza DomainException y delega al default para el resto.
+
+    settings.py:
+        REST_FRAMEWORK = {
+            "EXCEPTION_HANDLER": "app.interfaces.exception_handlers.custom_exception_handler",
+        }
+    """
+    if isinstance(exc, DomainException):
+        return translate_domain_exception(exc)
+    # Delega al handler por defecto de DRF (APIException, ValidationError de DRF, etc.)
+    return drf_default_exception_handler(exc, context)
+
+
 __all__ = [
     "DomainExceptionTranslator",
-    "translate_domain_exception", 
+    "translate_domain_exception",
     "handle_domain_exception_decorator",
     "DomainExceptionMiddleware",
+    "custom_exception_handler",
 ]
