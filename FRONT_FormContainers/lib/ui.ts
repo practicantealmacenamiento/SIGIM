@@ -1,5 +1,3 @@
-// src/lib/ui.ts
-
 // Fecha YYYY-MM-DD en hora local (sin el desfase de toISOString/UTC)
 export const today = () => {
   const d = new Date();
@@ -10,7 +8,10 @@ export const today = () => {
 };
 
 type QLike = { type: string; file_mode?: string | null };
-const normMode = (m?: string | null) => (m ?? "").toLowerCase().replace(/-/g, "_").trim();
+
+// Normaliza el modo del file input a nuestro formato esperado
+const normMode = (m?: string | null) =>
+  String(m ?? "").toLowerCase().replace(/-/g, "_").trim();
 
 // OCR si el modo contiene "image_ocr" o "ocr_only"
 export const isOcr = (q: QLike) =>
@@ -21,12 +22,12 @@ export const isImageOnly = (q: QLike) =>
   q.type === "file" && normMode(q.file_mode) === "image_only";
 
 // === Reglas de subida alineadas con el backend ===
-export const MAX_FILE_MB = 10;
+export const MAX_FILE_MB = 10 as const;
 
 export const maxFiles = (q: QLike) => {
   if (q.type !== "file") return 0;
-  if (isOcr(q)) return 1;          // OCR: exactamente 1 imagen
-  if (isImageOnly(q)) return 2;    // image_only: 1 o 2 imágenes
+  if (isOcr(q)) return 1;       // OCR: exactamente 1 imagen
+  if (isImageOnly(q)) return 2; // image_only: 1 o 2 imágenes
   return 0;
 };
 
@@ -35,9 +36,13 @@ export const fileAccept = (q: QLike) =>
   q.type === "file" ? "image/*" : "";
 
 // Validaciones en cliente (tipo y tamaño, mismas reglas del back)
-export const validateFiles = (q: QLike, files: File[] | FileList): string | null => {
+export const validateFiles = (
+  q: QLike,
+  files: File[] | FileList
+): string | null => {
   const list = Array.from(files ?? []);
   if (q.type !== "file") return null;
+  if (list.length === 0) return null; // nada que validar
 
   const limit = MAX_FILE_MB * 1024 * 1024;
 
@@ -76,5 +81,6 @@ export const radioCls = (active: boolean) =>
       ? "bg-skyBlue/10 border-skyBlue"
       : "bg-white border-slate-200 hover:border-slate-300 dark:bg-[#121417] dark:border-white/10"
   }`;
+
 
 

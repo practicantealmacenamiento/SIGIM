@@ -10,25 +10,30 @@ import {
 } from "@/lib/api.admin";
 
 /**
- * Navbar limpia y auto-suficiente con login unificado:
- * - Solo lee localStorage (nada de cookies).
- * - Claves configurables por ENV para username/is_staff.
- * - Recalcula en: mount, cambio de ruta, eventos de storage/focus/visibility.
- * - Muestra "Admin" si hay token y NO existe is_staff=false (o si is_staff=true).
+ * Navbar (login unificado, solo localStorage)
+ * -------------------------------------------------------
+ * - Lee auth desde localStorage; sin cookies.
+ * - Claves de username/is_staff configurables por ENV.
+ * - Recalcula estado en: mount, cambio de ruta, storage, focus y visibility.
+ * - Si hay token y STAFF_KEY no existe, se asume staff "optimista" para mostrar Admin.
+ * - Mantiene estructura y estilos actuales (incluye <header>).
  */
 
+// Estilos base / activo para enlaces
 const baseLink =
   "inline-flex items-center gap-2 px-3 py-2 text-sm md:text-base rounded-md border-b-2 border-transparent text-slate-700 dark:text-bone hover:bg-slate-50/60 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/30";
 const activeLink = "text-sky-600 dark:text-sky-400 border-current";
 
+// ID de Fase 1 (si está configurado)
 const Q_FASE1 = process.env.NEXT_PUBLIC_Q_FASE1_ID || null;
 
-// Claves para username y staff (puedes cambiarlas por ENV sin tocar código)
+// Claves username y staff (overridable vía ENV)
 const USERNAME_KEY =
   process.env.NEXT_PUBLIC_AUTH_USERNAME_KEY || "auth:username";
 const STAFF_KEY =
   process.env.NEXT_PUBLIC_AUTH_IS_STAFF_KEY || "auth:is_staff";
 
+// Util: parseo de booleanos guardados en LS
 function parseBool(v: string | null | undefined): boolean {
   if (!v) return false;
   const s = v.trim().toLowerCase();
@@ -38,11 +43,12 @@ function parseBool(v: string | null | undefined): boolean {
 export default function Navbar() {
   const pathname = usePathname();
 
-  // ===== Auth (solo localStorage) =====
+  /* ========== Estado de sesión ========== */
   const [isAuth, setIsAuth] = useState(false);
   const [isStaff, setIsStaff] = useState(false);
   const [username, setUsername] = useState<string | null>(null);
 
+  // Recalcula flags en base a LS (y getAuthToken() como respaldo)
   const recomputeAuth = () => {
     const token =
       typeof localStorage !== "undefined"
@@ -57,23 +63,23 @@ export default function Navbar() {
         ? localStorage.getItem(STAFF_KEY)
         : null;
 
-    const authed = !!(token || getAuthToken()); // doble chequeo por seguridad
+    // Doble chequeo de token por seguridad (LS + helper)
+    const authed = !!(token || getAuthToken());
 
-    // Regla: si STAFF_KEY existe, respétalo; si no existe, y hay token => mostrar Admin optimistamente
-    const staff =
-      staffStored === null ? !!token : parseBool(staffStored);
+    // Regla: si STAFF_KEY existe -> respetar; si no -> si hay token, asumir staff
+    const staff = staffStored === null ? !!token : parseBool(staffStored);
 
     setIsAuth(authed);
     setIsStaff(staff);
     setUsername(name && name.trim() ? name.trim() : null);
   };
 
-  // Montaje + listeners globales
+  /* ========== Ciclo de vida: mount + listeners globales ========== */
   useEffect(() => {
     recomputeAuth();
 
     const onStorage = (e: StorageEvent) => {
-      // Solo reaccionar si cambian nuestras claves
+      // Solo reaccionar si cambian las claves relevantes
       if (
         !e.key ||
         e.key === AUTH_TOKEN_KEY ||
@@ -96,17 +102,15 @@ export default function Navbar() {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVis);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Recalcular al cambiar de ruta y cerrar menú si estaba abierto
+  /* ========== Cuando cambia la ruta: refrescar auth y cerrar menú ========== */
   useEffect(() => {
     recomputeAuth();
     setOpen(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
 
-  // ===== Helpers de navegación =====
+  /* ========== Helpers de navegación ========== */
   const isActive = (href: string) =>
     pathname === href || pathname.startsWith(href + "/");
 
@@ -122,7 +126,7 @@ export default function Navbar() {
   const adminHref = "/admin";
   const adminIsActive = isActive("/admin");
 
-  // ===== Dropdown =====
+  /* ========== Dropdown de usuario ========== */
   const [open, setOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{
     top: number;
@@ -148,6 +152,7 @@ export default function Navbar() {
     });
   }
 
+  // Cierre por click fuera / Escape / scroll / resize
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
       if (!open) return;
@@ -176,15 +181,23 @@ export default function Navbar() {
   const loginHref = `/login?next=${encodeURIComponent(pathname || "/")}`;
 
   function onLogout() {
-  clearAuthToken();
-  const next = typeof window !== "undefined" ? encodeURIComponent(window.location.pathname) : "";
-  window.location.replace(`/login?next=${next || "/"}`);
-}
+    clearAuthToken();
+    const next =
+      typeof window !== "undefined"
+        ? encodeURIComponent(window.location.pathname || "/")
+        : "%2F";
+    window.location.replace(`/login?next=${next}`);
+  }
 
+  /* ========== Render ========== */
   return (
     <header className="w-full border-b bg-background">
       <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4">
-        <nav className="flex items-center gap-2 md:gap-3 whitespace-nowrap overflow-x-auto">
+        {/* Navegación primaria */}
+        <nav
+          className="flex items-center gap-2 md:gap-3 whitespace-nowrap overflow-x-auto"
+          aria-label="Navegación principal"
+        >
           <Link
             href="/"
             className={`${baseLink} ${isActive("/") ? activeLink : ""}`}
@@ -232,6 +245,7 @@ export default function Navbar() {
           )}
         </nav>
 
+        {/* Área de sesión (login / menú de usuario) */}
         <div className="flex items-center gap-2">
           {isAuth ? (
             <>

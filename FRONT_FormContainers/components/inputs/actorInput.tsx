@@ -1,14 +1,26 @@
+/* eslint-disable jsx-a11y/role-has-required-aria-props */
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { searchCatalogActors } from "../../lib/api.form";
 
+/**
+ * Tipos de actor compatibles con el catálogo.
+ */
 type ActorTipo = "TRANSPORTISTA" | "PROVEEDOR" | "RECEPTOR";
 
+/**
+ * Estructura mínima de un actor devuelto por el backend.
+ */
 export type ActorItem = {
   id: string;
   nombre: string;
   nit?: string | null;
 };
 
+/**
+ * Props del componente:
+ * - `multiple`: si es true, deja el popover abierto para seleccionar varios.
+ * - `selectFirstOnEnter`: al presionar Enter, toma el primer resultado (si hay).
+ */
 type Props = {
   tipo: ActorTipo;
   defaultValue?: string;
@@ -16,12 +28,13 @@ type Props = {
   onSelect: (actor: ActorItem) => void;
   placeholder?: string;
   className?: string;
-  /** Modo selección múltiple: limpia input, mantiene abierto y refocus tras seleccionar */
   multiple?: boolean;
-  /** Si true, Enter selecciona el primer resultado cuando hay lista */
   selectFirstOnEnter?: boolean;
 };
 
+/* =========================================================
+   Hook: useDebounced — Devuelve un valor con retardo controlado
+   ========================================================= */
 function useDebounced<T>(value: T, delay = 300) {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {
@@ -31,6 +44,12 @@ function useDebounced<T>(value: T, delay = 300) {
   return debounced;
 }
 
+/* =========================================================
+   Componente: ActorInput
+   - Autocomplete para actores del catálogo (proveedor/transportista/receptor)
+   - Búsqueda remota con debounce y cancelación por AbortController
+   - Accesibilidad ARIA básica (listbox/option)
+   ========================================================= */
 export default function ActorInput({
   tipo,
   defaultValue = "",
@@ -41,22 +60,27 @@ export default function ActorInput({
   multiple = false,
   selectFirstOnEnter = true,
 }: Props) {
+  // Estado del buscador
   const [query, setQuery] = useState(defaultValue);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<ActorItem[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
 
+  // Refs
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  // Valor "debounced" para no disparar búsquedas por cada tecla
   const debounced = useDebounced(query, 300);
   const canSearch = useMemo(() => debounced.trim().length >= 2, [debounced]);
 
-  // Sincroniza el valor inicial si cambia el prop
+  // Sincronizar defaultValue si cambia externamente
   useEffect(() => {
     setQuery(defaultValue || "");
   }, [defaultValue]);
 
-  // Buscar mientras esté abierto y haya 2+ letras
+  // Búsqueda remota mientras el popover esté abierto y haya 2+ letras
   useEffect(() => {
     if (!open) return;
     if (!canSearch) {
@@ -84,26 +108,50 @@ export default function ActorInput({
     return () => controller.abort();
   }, [open, canSearch, debounced, tipo]);
 
-  const handlePick = useCallback((actor: ActorItem) => {
-    onSelect(actor);
-    if (multiple) {
-      // Limpia, deja abierto y devuelve el foco para seguir agregando
-      setQuery("");
-      setOpen(true);
-      requestAnimationFrame(() => inputRef.current?.focus());
-    } else {
-      setQuery(actor.nombre);
-      setOpen(false);
-    }
-  }, [onSelect, multiple]);
+  // Selección de un item de la lista
+  const handlePick = useCallback(
+    (actor: ActorItem) => {
+      onSelect(actor);
+      if (multiple) {
+        // Limpia, mantiene abierto y devuelve el foco para seguir agregando
+        setQuery("");
+        setOpen(true);
+        requestAnimationFrame(() => inputRef.current?.focus());
+      } else {
+        setQuery(actor.nombre);
+        setOpen(false);
+      }
+    },
+    [onSelect, multiple]
+  );
 
-  // Enter -> selecciona el primer resultado visible (opcional)
+  // Enter => selecciona el primer resultado (opcional)
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (selectFirstOnEnter && e.key === "Enter" && open && items.length > 0) {
       e.preventDefault();
       handlePick(items[0]);
     }
+    if (e.key === "Escape" && open) {
+      e.preventDefault();
+      setOpen(false);
+    }
   };
+
+  // Cierre por click fuera (más robusto que blur sobre el input)
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (ev: MouseEvent) => {
+      const t = ev.target as Node;
+      if (inputRef.current?.contains(t)) return;
+      if (popoverRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  // ID base para relacionar input y listbox
+  const listboxId = useMemo(() => `actor-listbox-${tipo.toLowerCase()}`, [tipo]);
 
   return (
     <div className={`relative ${className}`}>
@@ -111,50 +159,72 @@ export default function ActorInput({
         ref={inputRef}
         type="text"
         value={query}
-        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
         onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}  // permite click en la lista
         onKeyDown={handleKeyDown}
         disabled={disabled}
         placeholder={placeholder}
-        className="w-full rounded-md border px-3 py-2 outline-none focus:ring"
         autoComplete="off"
+        aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        role="combobox"
+        className="w-full rounded-md border px-3 py-2 outline-none focus:ring ring-sky-300/60 bg-white dark:bg-slate-900"
       />
 
       {open && (
-        <div className="absolute z-50 mt-1 w-full rounded-md border bg-white shadow-lg overflow-hidden">
+        <div
+          ref={popoverRef}
+          className="absolute z-50 mt-1 w-full rounded-md border bg-white dark:bg-slate-900 dark:border-white/10 shadow-lg overflow-hidden"
+        >
           {loading && (
-            <div className="px-3 py-2 text-sm text-gray-500">Buscando…</div>
+            <div className="px-3 py-2 text-sm text-gray-500 dark:text-slate-400">
+              Buscando…
+            </div>
           )}
 
           {!loading && !canSearch && (
-            <div className="px-3 py-2 text-sm text-gray-500">
+            <div className="px-3 py-2 text-sm text-gray-500 dark:text-slate-400">
               Escribe al menos 2 letras para buscar.
             </div>
           )}
 
           {!loading && canSearch && error && (
-            <div className="px-3 py-2 text-sm text-red-600">{error}</div>
+            <div className="px-3 py-2 text-sm text-red-600 dark:text-red-400">
+              {error}
+            </div>
           )}
 
           {!loading && canSearch && !error && items.length === 0 && (
-            <div className="px-3 py-2 text-sm text-gray-500">Sin resultados.</div>
+            <div className="px-3 py-2 text-sm text-gray-500 dark:text-slate-400">
+              Sin resultados.
+            </div>
           )}
 
           {!loading && !error && items.length > 0 && (
-            <ul role="listbox" className="max-h-64 overflow-auto divide-y">
+            <ul
+              id={listboxId}
+              role="listbox"
+              className="max-h-64 overflow-auto divide-y divide-slate-100 dark:divide-white/10"
+            >
               {items.map((it) => (
                 <li
                   key={it.id}
                   role="option"
-                  className="cursor-pointer px-3 py-2 hover:bg-gray-50"
-                  onMouseDown={(e) => e.preventDefault()} // evita blur
+                  className="cursor-pointer px-3 py-2 hover:bg-gray-50 dark:hover:bg-white/5"
+                  onMouseDown={(e) => e.preventDefault()} // evita blur del input
                   onClick={() => handlePick(it)}
                   title={it.nit ? `${it.nombre} — ${it.nit}` : it.nombre}
                 >
-                  <div className="text-sm font-medium">{it.nombre}</div>
+                  <div className="text-sm font-medium text-slate-800 dark:text-slate-100">
+                    {it.nombre}
+                  </div>
                   {it.nit && (
-                    <div className="text-xs text-gray-500">NIT: {it.nit}</div>
+                    <div className="text-xs text-gray-500 dark:text-slate-400">
+                      NIT: {it.nit}
+                    </div>
                   )}
                 </li>
               ))}
@@ -165,3 +235,4 @@ export default function ActorInput({
     </div>
   );
 }
+

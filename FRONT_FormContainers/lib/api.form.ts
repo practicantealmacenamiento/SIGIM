@@ -1,19 +1,21 @@
 /**
  * API del módulo Formulario — alineada a backend con prefijo versionado.
- * - Lee configuración desde env:
- *   - NEXT_PUBLIC_BACKEND_ORIGIN (p.ej. http://172.24.66.23:8000)
- *   - NEXT_PUBLIC_API_PREFIX    (por defecto /api/v1)
- *   - NEXT_PUBLIC_API_URL       (opcional; puede ser /api, /api/v1 o absoluta)
- * - Autenticación:
- *   - Authorization: Bearer <token>  (token en localStorage("auth_token") o cookie "auth_token")
- *   - credentials: "include" + X-CSRFToken (para sesión/CSRF si aplica)
- * - Endpoints usados por el flujo: createSubmission, getPrimeraPregunta, guardarYAvanzar,
- *   verificarImagen, finalizarSubmission, getQuestionById, getSubmissionDetail, listQuestionnaires,
- *   secureMediaUrl, searchActors.
+ * Lee configuración desde env:
+ *  - NEXT_PUBLIC_BACKEND_ORIGIN  (p.ej. http://172.24.66.23:8000)
+ *  - NEXT_PUBLIC_API_PREFIX      (por defecto /api/v1)
+ *  - NEXT_PUBLIC_API_URL         (opcional; puede ser /api, /api/v1 o absoluta)
+ *
+ * Autenticación:
+ *  - Authorization: Bearer <token>  (token en localStorage("auth_token") o cookie "auth_token")
+ *  - credentials: "include" + X-CSRFToken (para sesión/CSRF si aplica)
+ *
+ * Endpoints: createSubmission, getPrimeraPregunta, guardarYAvanzar, verificarImagen,
+ * finalizarSubmission, getQuestionById, getSubmissionDetail, listQuestionnaires,
+ * secureMediaUrl, searchCatalogActors, getFaseIds.
  */
 
 /* =========================
- * Config base (sin sorpresas)
+ * Config base de API
  * ========================= */
 
 const trimEndSlash = (s: string) => s.replace(/\/+$/, "");
@@ -67,7 +69,8 @@ function readCookie(name: string): string | null {
   if (typeof document === "undefined") return null;
   const value = `; ${document.cookie}`;
   const parts = value.split(`; ${name}=`);
-  if (parts.length === 2) return decodeURIComponent(parts.pop()!.split(";").shift() || "");
+  if (parts.length === 2)
+    return decodeURIComponent(parts.pop()!.split(";").shift() || "");
   return null;
 }
 
@@ -90,10 +93,38 @@ type FetchOpts = RequestInit & {
   skipAuth?: boolean;
 };
 
-export async function fetchApi<T = any>(endpoint: string, init: FetchOpts = {}): Promise<T> {
+function pickErrorMessage(data: any): string | null {
+  if (!data) return null;
+  if (typeof data === "string") return data;
+  const first = (...xs: any[]) =>
+    xs.find((v) => typeof v === "string" && v.trim());
+  const direct = first(data.detail, data.error, data.message, data.mensaje);
+  if (direct) return direct;
+
+  // Arrays comunes de DRF
+  if (Array.isArray(data.non_field_errors) && data.non_field_errors[0])
+    return String(data.non_field_errors[0]);
+  if (Array.isArray(data.answer) && data.answer[0]) return String(data.answer[0]);
+
+  // Busca el primer string útil en claves
+  for (const k of Object.keys(data)) {
+    const v = data[k];
+    if (typeof v === "string" && v.trim()) return v;
+    if (Array.isArray(v) && typeof v[0] === "string" && v[0].trim()) return v[0];
+  }
+  return null;
+}
+
+export async function fetchApi<T = any>(
+  endpoint: string,
+  init: FetchOpts = {}
+): Promise<T> {
   const url = buildUrl(endpoint);
-  const headers = new Headers(init.headers || {});
   const method = (init.method || "GET").toUpperCase();
+
+  // Mezcla headers sin perder los existentes
+  const headers = new Headers(init.headers || {});
+  if (!headers.has("Accept")) headers.set("Accept", "application/json");
 
   // Auth: Bearer por defecto (el backend acepta Bearer o Token)
   const token = getToken();
@@ -105,21 +136,32 @@ export async function fetchApi<T = any>(endpoint: string, init: FetchOpts = {}):
   const isUnsafe = !["GET", "HEAD", "OPTIONS"].includes(method);
   if (isUnsafe) {
     const csrftoken = readCookie("csrftoken");
-    if (csrftoken) headers.set("X-CSRFToken", csrftoken);
-    if (!(init.body instanceof FormData)) {
-      headers.set("Content-Type", headers.get("Content-Type") || "application/json");
+    if (csrftoken && !headers.has("X-CSRFToken"))
+      headers.set("X-CSRFToken", csrftoken);
+    // Sólo seteamos Content-Type si NO es FormData y el caller no lo fijó
+    const isFormData = typeof FormData !== "undefined" && init.body instanceof FormData;
+    if (!isFormData && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
     }
   }
 
-  const res = await fetch(url, { ...init, headers, credentials: "include" });
+  const res = await fetch(url, {
+    ...init,
+    headers,
+    // Mantiene include por defecto (sesión/CSRF), pero respeta si el caller pasó otra cosa
+    credentials: init.credentials ?? "include",
+  });
 
   if (!res.ok) {
-    const txt = await res.text();
+    // Intenta normalizar mensaje de error
+    const text = await res.text().catch(() => "");
     try {
-      const data = JSON.parse(txt);
-      throw Object.assign(new Error(data.detail || data.error || res.statusText), { status: res.status, data });
+      const data = text ? JSON.parse(text) : null;
+      const msg = pickErrorMessage(data) || res.statusText || "Error de solicitud";
+      throw Object.assign(new Error(msg), { status: res.status, data });
     } catch {
-      throw Object.assign(new Error(txt || res.statusText), { status: res.status });
+      const msg = text || res.statusText || "Error de solicitud";
+      throw Object.assign(new Error(msg), { status: res.status });
     }
   }
 
@@ -128,7 +170,7 @@ export async function fetchApi<T = any>(endpoint: string, init: FetchOpts = {}):
 
   const ct = res.headers.get("Content-Type") || "";
   if (ct.includes("application/json")) return (await res.json()) as T;
-  // sin contenido
+  // sin contenido o no-JSON
   return (null as unknown) as T;
 }
 
@@ -137,7 +179,12 @@ export async function fetchApi<T = any>(endpoint: string, init: FetchOpts = {}):
  * ========================= */
 
 // Crea una submission (payload flexible)
-export function createSubmission(payload: { questionnaire: string; tipo_fase?: "entrada" | "salida"; regulador_id?: string | null; placa_vehiculo?: string | null }) {
+export function createSubmission(payload: {
+  questionnaire: string;
+  tipo_fase?: "entrada" | "salida";
+  regulador_id?: string | null;
+  placa_vehiculo?: string | null;
+}) {
   const body = {
     ...payload,
     questionnaire_id: payload.questionnaire, // compat con back si espera *_id
@@ -169,7 +216,11 @@ export function getQuestionById(id: string) {
 export const getQuestionDetail = getQuestionById;
 
 // Verificación OCR (imagen + question_id)
-export function verificarImagen(payload: { question_id: string; imagen: File; mode?: "text" | "document" }) {
+export function verificarImagen(payload: {
+  question_id: string;
+  imagen: File;
+  mode?: "text" | "document";
+}) {
   const fd = new FormData();
   fd.set("question_id", payload.question_id);
   fd.set("imagen", payload.imagen);
@@ -213,8 +264,8 @@ export async function searchCatalogActors(opts: {
   // Enviamos ambos params por compatibilidad (search y q)
   const params = new URLSearchParams({
     tipo,
-    search,              // ← si la vista usa SearchFilter
-    q: search,           // ← si la vista lee 'q'
+    search, // ← si la vista usa SearchFilter
+    q: search, // ← si la vista lee 'q'
     limit: String(limit),
   });
 

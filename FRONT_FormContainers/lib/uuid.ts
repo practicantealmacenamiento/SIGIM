@@ -1,28 +1,52 @@
-// Generador UUID v4 tolerante a SSR y a navegadores sin crypto.randomUUID
+// lib/uuid.ts
+/* eslint-disable no-bitwise */
+
+// Generador UUID v4 tolerante a SSR y a entornos sin crypto.randomUUID
 export function genUUID(): string {
-  // 1) randomUUID nativo si existe (browser moderno)
-  if (typeof globalThis !== "undefined") {
-    const anyGlobal: any = globalThis as any;
-    const c = anyGlobal.crypto;
-    if (c && typeof c.randomUUID === "function") {
-      try { return c.randomUUID(); } catch {}
+  // 1) randomUUID nativo si existe (browser moderno / Node reciente con webcrypto)
+  const g: any = typeof globalThis !== "undefined" ? globalThis : undefined;
+  const c: any = g?.crypto;
+  if (c && typeof c.randomUUID === "function") {
+    try {
+      return c.randomUUID();
+    } catch {
+      // continúa a getRandomValues
     }
-    // 2) WebCrypto getRandomValues (browser seguro)
-    if (c && typeof c.getRandomValues === "function") {
-      const b = new Uint8Array(16);
-      c.getRandomValues(b);
-      b[6] = (b[6] & 0x0f) | 0x40; // version 4
-      b[8] = (b[8] & 0x3f) | 0x80; // variant 10
-      const h = Array.from(b, (x) => x.toString(16).padStart(2, "0"));
-      return `${h.slice(0,4).join("")}-${h.slice(4,6).join("")}-${h.slice(6,8).join("")}-${h.slice(8,10).join("")}-${h.slice(10).join("")}`;
-    }
-    // 3) Node 18+: crypto.randomUUID vía módulo nativo (si expuesto en globalThis.crypto)
-    // (si usas Node 18+ y quieres forzar, puedes importar { randomUUID } from 'crypto' del lado servidor)
   }
-  // 4) Fallback puro Math.random (no críptico, suficiente para IDs temporales en UI)
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+
+  // 2) WebCrypto getRandomValues (browser seguro / Node con webcrypto)
+  if (c && typeof c.getRandomValues === "function") {
+    const b = new Uint8Array(16);
+    c.getRandomValues(b);
+
+    // v4: 0100 xxxx en byte 6, y 10xx xxxx en byte 8
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+
+    // lookup de hex para rendimiento y consistencia
+    const lut = HEX_LUT;
+    return (
+      lut[b[0]] + lut[b[1]] + lut[b[2]] + lut[b[3]] + "-" +
+      lut[b[4]] + lut[b[5]] + "-" +
+      lut[b[6]] + lut[b[7]] + "-" +
+      lut[b[8]] + lut[b[9]] + "-" +
+      lut[b[10]] + lut[b[11]] + lut[b[12]] + lut[b[13]] + lut[b[14]] + lut[b[15]]
+    );
+  }
+
+  // 3) Fallback: Math.random (no críptico, suficiente para IDs temporales en UI)
+  //    Mantiene el formato v4 (bits de versión/variante forzados).
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (ch) => {
     const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    const v = ch === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
 }
+
+// Tabla de lookup hex (00..ff)
+const HEX_LUT: string[] = (() => {
+  const arr = new Array<string>(256);
+  for (let i = 0; i < 256; i++) arr[i] = (i + 256).toString(16).slice(1);
+  return arr;
+})();
+

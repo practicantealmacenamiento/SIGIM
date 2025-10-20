@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 "use client";
 
 import { genUUID } from "@/lib/uuid";
@@ -14,6 +15,7 @@ import {
   upsertQuestionnaire,
   duplicateQuestionnaire,
   deleteQuestionnaire,
+  createQuestionnaire,
   // Actores (con paginación)
   adminListActors,
   adminCreateActor,
@@ -133,11 +135,23 @@ function FormulariosPanel() {
   }
   useEffect(() => { load(); }, []);
 
-  function newQuestionnaire() {
-    const id = genUUID();
-    const q: AdminQuestionnaire = { id, title: "Nuevo cuestionario", version: "v1", timezone: "America/Bogota", questions: [] };
-    sessionStorage.setItem(`draft:${id}`, JSON.stringify(q));
-    router.push(`/admin/${id}`);
+  async function newQuestionnaire() {
+    try {
+      setLoading(true);
+      const created = await createQuestionnaire({
+        title: "Nuevo cuestionario",
+        version: "v1",
+        timezone: "America/Bogota",
+        questions: [],
+      });
+      const newId = String((created as any)?.id ?? (created as AdminQuestionnaire)?.id ?? "");
+      if (!newId) throw new Error("El backend no devolvió un ID para el nuevo cuestionario.");
+      router.push(`/admin/${newId}`);
+    } catch (e: any) {
+      alert(e?.message || "No se pudo crear el cuestionario");
+    } finally {
+      setLoading(false);
+    }
   }
   async function onDuplicate(id: string) {
     const v = prompt("Nueva versión (opcional):") || undefined;
@@ -251,7 +265,7 @@ function FormulariosPanel() {
   );
 }
 
-/* ===================== Actores (paginación PRO) ===================== */
+/* ===================== Actores (paginación) ===================== */
 function ActoresPanel() {
   const [query, setQuery] = useState("");
   const debouncedQ = useDebounced(query, 350);
@@ -288,7 +302,7 @@ function ActoresPanel() {
           page_size: pageSize,
         });
 
-        // ¿server-side paging?
+        // server-side paging
         const serverPaged = !!res.next || !!res.prev || (typeof res.count === "number" && res.count !== res.results.length);
 
         let rows: AdminActor[] = [];

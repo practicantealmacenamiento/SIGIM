@@ -1,3 +1,4 @@
+/* eslint-disable prefer-const */
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Item, Question, NextResponse } from "@/types/form";
@@ -12,9 +13,11 @@ import {
 import { isOcr, isImageOnly, today } from "@/lib/ui";
 import { saveDraft, loadDraft, clearDraft } from "@/lib/draft";
 
+/* ========= Claves y tipos auxiliares ========= */
 const DRAFT_KEY = (qid: string) => `formulario_draft_${qid}`;
+const SUB_KEY   = (qid: string) => `submission:${qid}`;
+
 type ActorMini = { id: string; nombre: string; documento?: string | null };
-const SUB_KEY = (qid: string) => `submission:${qid}`;
 
 const tagOf = (q: Question) =>
   String((q as any)?.semantic_tag || "none").toLowerCase();
@@ -24,9 +27,9 @@ const isActorTag = (t: string) =>
 
 const valueFromOCR = (resp: any, tag: string) => {
   if (!resp) return "";
-  if (tag === "placa" && resp.placa) return resp.placa as string;
+  if (tag === "placa"      && resp.placa)      return resp.placa as string;
   if (tag === "contenedor" && resp.contenedor) return resp.contenedor as string;
-  if (tag === "precinto" && resp.precinto) return resp.precinto as string;
+  if (tag === "precinto"   && resp.precinto)   return resp.precinto as string;
   return (resp.ocr_raw as string) || "";
 };
 
@@ -35,7 +38,7 @@ function fdSet(fd: FormData, k: string, v: any) {
   fd.set(k, typeof v === "string" || v instanceof Blob ? v : String(v));
 }
 
-/** 🔹 Normaliza cualquier error del backend a un string legible */
+/** Normaliza cualquier error del backend a un string legible */
 function normalizeApiError(e: any): string {
   const tryPick = (obj: any): string | null => {
     if (!obj || typeof obj === "string") return obj || null;
@@ -70,12 +73,14 @@ function normalizeApiError(e: any): string {
   return typeof raw === "string" ? raw : "Ocurrió un error inesperado";
 }
 
+/* ========= Hook principal ========= */
 export function useFormFlow(
   questionnaire_id?: string | null,
   submission_id?: string | null
 ) {
   const qid = questionnaire_id ?? "";
 
+  /* --- Estado base --- */
   const [submissionId, setSubmissionId] = useState<string | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [mostrarResumen, setMostrarResumen] = useState(false);
@@ -85,14 +90,15 @@ export function useFormFlow(
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // NUEVO: Estado para reanudación de draft y bandera para evitar doble init
+  // Reanudación de draft y protección de doble init
   const [resumeDraft, setResumeDraft] = useState<{ draft: any } | null>(null);
   const [draftRestored, setDraftRestored] = useState(false);
 
+  // Refs utilitarias
   const lastRef = useRef<HTMLDivElement | null>(null);
   const inFlight = useRef(false);
 
-  // === CHECK SI HAY DRAFT ANTES DE INICIAR ===
+  /* ========= 1) Al montar: detectar draft pendiente ========= */
   useEffect(() => {
     if (!qid) return;
     const draft = loadDraft(DRAFT_KEY(qid));
@@ -112,19 +118,21 @@ export function useFormFlow(
     // Si no hay draft válido, seguimos con el loading "normal"
   }, [qid]);
 
-  // --- BOOTSTRAP: SOLO SI NO HAY DRAFT PENDIENTE Y NO SE HA RESTAURADO ---
+  /* ========= 2) Bootstrap cuando NO hay draft que reanudar ========= */
   useEffect(() => {
-    if (!qid || resumeDraft || draftRestored) return; // <-- evita doble init
+    if (!qid || resumeDraft || draftRestored) return; // evita doble init
     let cancelled = false;
+
     (async () => {
       try {
         setError(null);
         setLoading(true);
         if (!qid) { setLoading(false); return; }
 
+        // 2.1) Asegurar submissionId (sessionStorage o crearlo)
         let sid: string | null = submission_id ?? null;
         if (!sid) {
-          try { sid = sessionStorage.getItem(`submission:${qid}`); } catch {}
+          try { sid = sessionStorage.getItem(SUB_KEY(qid)); } catch {}
         }
 
         if (!sid) {
@@ -134,12 +142,13 @@ export function useFormFlow(
           });
           sid = created?.id || created?.uuid || created?.pk || null;
           if (!sid) throw new Error("El backend no devolvió ID de submission.");
-          try { sessionStorage.setItem(`submission:${qid}`, sid); } catch {}
+          try { sessionStorage.setItem(SUB_KEY(qid), sid); } catch {}
         }
 
         if (cancelled) return;
         setSubmissionId(sid);
 
+        // 2.2) Cargar primera pregunta
         const first = await getPrimeraPregunta(qid);
         if (cancelled) return;
 
@@ -149,11 +158,13 @@ export function useFormFlow(
           type: first.type,
           required: first.required,
           order: first.order,
-          choices: first.choices ? first.choices.map(c => ({
-            id: c.id,
-            text: c.text,
-            branch_to: c.branch_to || null
-          })) : undefined,
+          choices: first.choices
+            ? first.choices.map((c: { id: any; text: any; branch_to: any; }) => ({
+                id: c.id,
+                text: c.text,
+                branch_to: c.branch_to || null
+              }))
+            : undefined,
           file_mode: first.file_mode as "image_ocr" | "ocr_only" | "image_only" | null,
           semantic_tag: first.semantic_tag
         };
@@ -171,10 +182,11 @@ export function useFormFlow(
         if (!cancelled) setLoading(false);
       }
     })();
+
     return () => { cancelled = true; };
   }, [qid, submission_id, resumeDraft, draftRestored]);
 
-  // --- RESTAURAR DRAFT SI ELIGE REANUDAR ---
+  /* ========= 3) Acciones del modal de draft ========= */
   const handleResumeDraft = () => {
     if (!resumeDraft) return;
     setSubmissionId(resumeDraft.draft.submissionId);
@@ -186,21 +198,18 @@ export function useFormFlow(
     setLoading(false);
   };
 
-  // --- REINICIAR DRAFT SI ELIGE EMPEZAR DE CERO ---
   const handleRestartDraft = () => {
     if (!qid) return;
     clearDraft(DRAFT_KEY(qid));
     setResumeDraft(null);
     setDraftRestored(false);
-    // Limpia también en sessionStorage cualquier residuo
-    try { sessionStorage.removeItem(`submission:${qid}`); } catch {}
+    try { sessionStorage.removeItem(SUB_KEY(qid)); } catch {}
     window.location.reload();
   };
 
-  // === AUTOSAVE EN CADA CAMBIO DE ESTADO ===
+  /* ========= 4) Autosave del draft ========= */
   useEffect(() => {
     if (!qid || !submissionId) return;
-    // SOLO guarda si hay al menos una respuesta respondida o editada
     const hayProgreso = items.some(
       (item) => item.saved || (item.value && String(item.value).trim().length > 0)
     );
@@ -213,24 +222,35 @@ export function useFormFlow(
         ts: Date.now()
       });
     } else if (!hayProgreso) {
-      // Si no hay progreso, limpia cualquier draft previo
       clearDraft(DRAFT_KEY(qid));
     }
   }, [qid, submissionId, items, mostrarResumen, finalizado]);
 
-  // === SCROLL A LA ÚLTIMA PREGUNTA ===
+  /* ========= 5) Scroll a la última tarjeta al crecer la lista ========= */
   useEffect(() => {
     lastRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [items.length]);
 
-  useEffect(() => {
-    const idx = items.length - 1;
-    const it = items[idx];
-    if (!it?.editing || it.q.type !== "date" || it.autoSubmitted) return;
-    submitOne(idx, it.value || today());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items.map(i => `${i.q.id}:${i.value}:${i.autoSubmitted}`).join("|")]);
+  /* ========= 6) Auto-submit para preguntas de fecha =========
+     Evitamos expresiones complejas en deps: usamos una clave memoizada. */
+  const lastItem = useMemo(() => items[items.length - 1] ?? null, [items]);
+  const lastDateAutoKey = useMemo(
+    () =>
+      lastItem
+        ? `${lastItem.q.id}:${lastItem.q.type}:${String(lastItem.editing)}:${String(lastItem.autoSubmitted)}:${String(lastItem.value)}:${items.length}`
+        : `none:${items.length}`,
+    [lastItem, items.length]
+  );
 
+  useEffect(() => {
+    if (!lastItem) return;
+    if (!lastItem.editing || lastItem.q.type !== "date" || lastItem.autoSubmitted) return;
+    // Nota: submitOne se invoca sin incluirlo en deps para evitar re-ejecuciones;
+    // la key anterior garantiza que solo dispare en cambios relevantes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    submitOne(items.length - 1, lastItem.value || today()); }, [lastDateAutoKey]);
+
+  /* ========= 7) Acciones del flujo ========= */
   async function submitOne(index: number, valueOverride?: string, actorOverride?: ActorMini) {
     const it = items[index] as any;
     if (!it?.editing) return;
@@ -247,20 +267,20 @@ export function useFormFlow(
       const q = it.q as Question;
       const tag = tagOf(q);
 
-      // Validaciones básicas por tipo (sin cambios funcionales)
+      // Validaciones mínimas por tipo (sin cambios funcionales)
       if (isActorTag(tag)) {
-  const actor = actorOverride ?? it.actor;
-  const v = (valueOverride ?? (it.value as string) ?? "").trim();
-  if (!actor?.id && !v) {
-    throw new Error("Escribe al menos un proveedor (separa por coma) o selecciona uno del catálogo.");
-  }
+        const actor = actorOverride ?? it.actor;
+        const v = (valueOverride ?? (it.value as string) ?? "").trim();
+        if (!actor?.id && !v) {
+          throw new Error("Escribe al menos un proveedor (separa por coma) o selecciona uno del catálogo.");
+        }
       } else if (q.type === "file") {
         const files: File[] = it.files || [];
         if (isOcr(q)) {
-          const tag = tagOf(q);
+          const tagNow = tagOf(q);
           const v = (valueOverride ?? (it.value as string) ?? "").trim();
 
-          if (tag === "placa") {
+          if (tagNow === "placa") {
             if (!v && files.length !== 1) {
               throw new Error("Escribe la placa o adjunta 1 imagen.");
             }
@@ -333,10 +353,11 @@ export function useFormFlow(
       let finished = typeof resp?.is_finished === "boolean" ? resp.is_finished : false;
       if (!finished && resp?.mensaje) finished = /finalizad/i.test(String(resp.mensaje));
 
-      // resolver siguiente pregunta
+      // Resolver siguiente pregunta
       let nextQ: Question | null = null;
-      if ((resp as any)?.next_question) nextQ = (resp as any).next_question as Question;
-      else if ((resp as any)?.next_question_id) {
+      if ((resp as any)?.next_question) {
+        nextQ = (resp as any).next_question as Question;
+      } else if ((resp as any)?.next_question_id) {
         try {
           const adminQ = await getQuestionById((resp as any).next_question_id as string);
           nextQ = {
@@ -345,11 +366,13 @@ export function useFormFlow(
             type: adminQ.type,
             required: adminQ.required,
             order: adminQ.order,
-            choices: adminQ.choices ? adminQ.choices.map(c => ({
-              id: c.id,
-              text: c.text,
-              branch_to: c.branch_to || null
-            })) : undefined,
+            choices: adminQ.choices
+              ? adminQ.choices.map((c: { id: any; text: any; branch_to: any; }) => ({
+                  id: c.id,
+                  text: c.text,
+                  branch_to: c.branch_to || null
+                }))
+              : undefined,
             file_mode: adminQ.file_mode as "image_ocr" | "ocr_only" | "image_only" | null,
             semantic_tag: adminQ.semantic_tag
           };
@@ -386,10 +409,9 @@ export function useFormFlow(
         return out;
       });
 
-      // 🔹 limpiar error en guardado exitoso
+      // Limpia error en guardado exitoso
       setError(null);
     } catch (e: any) {
-      // 🔹 mostrar mensaje normalizado
       setError(normalizeApiError(e));
     } finally {
       inFlight.current = false;
@@ -398,7 +420,6 @@ export function useFormFlow(
   }
 
   function setVal(i: number, v: string) {
-    // 🔹 limpiar error al escribir
     setError(null);
     setItems(prev => {
       const copy = [...prev];
@@ -410,7 +431,6 @@ export function useFormFlow(
   }
 
   function setActor(i: number, actor: ActorMini) {
-    // 🔹 limpiar error al seleccionar actor
     setError(null);
     setItems(prev => {
       const copy = [...prev];
@@ -422,7 +442,6 @@ export function useFormFlow(
   }
 
   function onSelectChoice(i: number, id: string) {
-    // no tocamos el flujo: mantiene setVal + submitOne
     setVal(i, id);
     submitOne(i, id);
   }
@@ -450,9 +469,8 @@ export function useFormFlow(
   }
 
   async function onFilesChange(i: number, list: FileList | null) {
-    // 🔹 limpiar error al adjuntar/quitar archivo
     setError(null);
-    if (!list?.length) return;
+    if (!list?.length) return; // Nota: limpiar archivos se maneja desde el padre con estado
     const q = items[i]?.q;
     const incoming = Array.from(list);
     const file = incoming[0];
@@ -576,7 +594,6 @@ export function useFormFlow(
       await finalizarSubmission(submissionId);
       setFinalizado(true);
       try { if (qid) sessionStorage.removeItem(SUB_KEY(qid)); } catch {}
-      // --- borra draft ---
       clearDraft(DRAFT_KEY(qid));
     } catch (e: any) {
       setError(e?.message || "No se pudo enviar el formulario");
@@ -585,9 +602,11 @@ export function useFormFlow(
     }
   }
 
+  /* ========= Derivados ========= */
   const total = items.length;
   const respondidas = useMemo(() => items.filter(i => i.saved).length, [items]);
 
+  /* ========= API del hook ========= */
   return {
     submissionId, items, setItems,
     mostrarResumen, setMostrarResumen,
@@ -611,7 +630,7 @@ export function useFormFlow(
 
     total, respondidas,
 
-    // --- draft controls para la UI del modal ---
+    // Draft controls para la UI del modal
     resumeDraft,
     handleResumeDraft,
     handleRestartDraft,

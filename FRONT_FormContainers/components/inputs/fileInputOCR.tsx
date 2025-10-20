@@ -1,7 +1,12 @@
+/* eslint-disable @next/next/no-img-element */
 "use client";
-import { useRef, useState, DragEvent } from "react";
+
+import { useRef, useState, DragEvent, useId } from "react";
 import { CARD, INPUT } from "@/lib/ui";
 
+/**
+ * Info opcional para validar/mostrar detalles de contenedor ISO 6346.
+ */
 type ContainerInfo = {
   code: string;
   checkDigit: number | null;
@@ -9,11 +14,23 @@ type ContainerInfo = {
   validIso: boolean | null;
 };
 
+/**
+ * Props
+ * - `active`: habilita interacciones (cuando la tarjeta está en edición).
+ * - `previews`: URLs de ObjectURL ya generadas por el padre.
+ * - `value`: texto OCR editable (controlado).
+ * - `ocrStatus`: "Procesando...", "Error...", etc. (solo display).
+ * - `onFilesChange`: ya validado en el padre.
+ * - `onChangeText`: actualiza el texto OCR manualmente.
+ * - `onSubmit`: confirma guardado.
+ * - `onRetryOCR`: reintenta el OCR para la imagen actual.
+ * - `containerInfo`: bloque opcional con estado ISO 6346.
+ */
 type Props = {
   active: boolean;
   previews?: string[];
-  value: string;               // texto OCR editable
-  ocrStatus?: string;          // "Procesando...", "Error...", etc.
+  value: string;
+  ocrStatus?: string;
   sending: boolean;
   onFilesChange: (files: FileList | null) => void;
   onChangeText: (v: string) => void;
@@ -38,9 +55,11 @@ export default function FileInputOCR({
   const [dragOver, setDragOver] = useState(false);
   const disabled = !active || sending;
 
-  const inputId = "ocr-file-input";
-  const statusId = "ocr-status";
-  const textId = "ocr-textarea";
+  // IDs únicos para ARIA (evita colisiones si hay varias tarjetas)
+  const uid = useId();
+  const inputId = `ocr-file-input-${uid}`;
+  const statusId = `ocr-status-${uid}`;
+  const textId = `ocr-textarea-${uid}`;
 
   const handleDrop = (e: DragEvent<HTMLLabelElement>) => {
     e.preventDefault();
@@ -50,6 +69,7 @@ export default function FileInputOCR({
     if (fl && fl.length > 0) onFilesChange(fl);
   };
 
+  // Badge de ISO 6346 (si se provee información del contenedor)
   const isoBadge = (() => {
     if (!containerInfo) return null;
     if (containerInfo.validIso === true) {
@@ -78,12 +98,17 @@ export default function FileInputOCR({
       {/* Zona de subida (click/cámara + drag&drop) */}
       <label
         htmlFor={inputId}
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
-        className={`block rounded-lg border border-dashed p-4 text-sm transition-colors cursor-pointer
-          ${dragOver ? "border-skyBlue bg-skyBlue/5" : "border-slate-300 dark:border-white/10"}
-          ${disabled ? "opacity-60 cursor-not-allowed" : ""}`}
+        className={[
+          "block rounded-lg border border-dashed p-4 text-sm transition-colors cursor-pointer",
+          dragOver ? "border-skyBlue bg-skyBlue/5" : "border-slate-300 dark:border-white/10",
+          disabled ? "opacity-60 cursor-not-allowed" : "",
+        ].join(" ")}
         aria-busy={ocrStatus === "Procesando..."}
         aria-describedby={statusId}
       >
@@ -97,7 +122,7 @@ export default function FileInputOCR({
           capture="environment"
           disabled={disabled}
           onClick={(e) => {
-            // permite re-seleccionar el mismo archivo
+            // Permite re-seleccionar el mismo archivo
             (e.currentTarget as HTMLInputElement).value = "";
           }}
           onChange={(e) => {
@@ -126,10 +151,14 @@ export default function FileInputOCR({
         </div>
       </label>
 
+      {/* Previews */}
       {!!previews.length && (
         <div className="grid grid-cols-2 gap-2">
           {previews.map((src, k) => (
-            <div key={k} className="rounded-lg overflow-hidden border border-slate-200 dark:border-white/10">
+            <div
+              key={k}
+              className="rounded-lg overflow-hidden border border-slate-200 dark:border-white/10"
+            >
               <img src={src} alt={`Vista previa ${k + 1}`} className="w-full h-28 object-cover" />
             </div>
           ))}
@@ -138,12 +167,16 @@ export default function FileInputOCR({
 
       {/* Estado de OCR */}
       {previews.length > 0 && (
-        <p id={statusId} className="text-xs text-slate-600 dark:text-white/70" aria-live="polite">
+        <p
+          id={statusId}
+          className="text-xs text-slate-600 dark:text-white/70"
+          aria-live="polite"
+        >
           {ocrStatus ? ocrStatus : "1 imagen lista para OCR."}
         </p>
       )}
 
-      {/* Campo de texto OCR */}
+      {/* Campo de texto OCR (editable) */}
       <div className={`${CARD} border-dashed`} aria-live="polite">
         <div className="text-sm font-semibold mb-2 px-3 pt-3 text-slate-600 dark:text-white/80">
           Texto detectado
@@ -156,7 +189,9 @@ export default function FileInputOCR({
             disabled={disabled}
             onChange={(e) => onChangeText(e.target.value)}
             placeholder={
-              previews.length ? "Extrayendo texto… (puedes editar luego)" : "Sube una imagen para extraer texto"
+              previews.length
+                ? "Extrayendo texto… (puedes editar luego)"
+                : "Sube una imagen para extraer texto"
             }
             className={INPUT}
             autoComplete="off"
@@ -171,7 +206,9 @@ export default function FileInputOCR({
             <div className="flex items-center justify-between flex-wrap gap-2 mb-1">
               <div className="text-sm font-medium text-slate-700 dark:text-white/80">
                 Código de contenedor:
-                <span className="ml-2 font-semibold tracking-wide">{containerInfo.code}</span>
+                <span className="ml-2 font-semibold tracking-wide">
+                  {containerInfo.code}
+                </span>
               </div>
               {isoBadge}
             </div>
@@ -182,7 +219,8 @@ export default function FileInputOCR({
               </span>
               {typeof containerInfo.providedDigit === "number" && (
                 <>
-                  {" "}| impreso: <span className="font-medium">{containerInfo.providedDigit}</span>
+                  {" "}| impreso:{" "}
+                  <span className="font-medium">{containerInfo.providedDigit}</span>
                 </>
               )}
             </div>
@@ -190,6 +228,7 @@ export default function FileInputOCR({
         )}
       </div>
 
+      {/* Acciones */}
       {active && (
         <div className="flex items-center gap-4">
           <button
@@ -223,4 +262,5 @@ export default function FileInputOCR({
     </div>
   );
 }
+
 

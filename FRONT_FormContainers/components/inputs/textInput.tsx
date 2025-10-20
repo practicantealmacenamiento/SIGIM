@@ -1,6 +1,15 @@
 "use client";
-import { INPUT } from "../../lib/ui";
 
+import { INPUT } from "@/lib/ui";
+
+/**
+ * TextInput
+ * -------------------------------------------------------
+ * Campo de texto controlado.
+ * - Dispara `onEnter` sólo cuando es Enter “puro” (sin Shift/Ctrl/Alt y sin IME en composición).
+ * - Llama `onBlur` para que el padre pueda guardar/validar al salir.
+ * - `value` se maneja como string (controlado por el padre).
+ */
 type Props = {
   value: string;
   disabled: boolean;
@@ -27,7 +36,7 @@ export default function TextInput({
       onChange={(e) => onChange(e.target.value)}
       onBlur={onBlur}
       onKeyDown={(e) => {
-        // Ejecuta onEnter solo en Enter "puro" y sin composición (IME)
+        // Ejecuta onEnter solo en Enter “puro” y sin composición (IME)
         const isComposing = (e.nativeEvent as any)?.isComposing;
         if (
           e.key === "Enter" &&
@@ -40,7 +49,9 @@ export default function TextInput({
         }
       }}
       autoComplete="off"
+      aria-label="Ingresar texto"
       className={INPUT}
     />
   );
 }
+

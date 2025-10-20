@@ -1,22 +1,50 @@
 "use client";
+
 import { memo, useId } from "react";
 import { radioCls } from "@/lib/ui";
 import type { Choice } from "@/types/form";
 
+/**
+ * ChoiceInput
+ * -------------------------------------------------------
+ * Grupo de opciones tipo "radio".
+ * - Ordena opciones por texto usando Intl.Collator (orden natural).
+ * - A11y: usa role="radiogroup" + label invisible asociado.
+ * - No incluye lógica de negocio: delega en `onSelect`.
+ */
 type Props = {
   choices?: Choice[];
   value: string;
   disabled: boolean;
   onSelect: (choiceId: string) => void;
-  name: string;
+  name: string; // atributo `name` del grupo de radios (controlado por el padre)
 };
 
-function ChoiceInputBase({ choices = [], value, disabled, onSelect, name }: Props) {
+function ChoiceInputBase({
+  choices = [],
+  value,
+  disabled,
+  onSelect,
+  name,
+}: Props) {
   const groupId = useId();
 
-  if (!choices.length) {
+  // Orden “natural” por texto (respeta números incrustados)
+  const collator = new Intl.Collator(undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+  const sortedChoices = [...choices].sort((a, b) =>
+    collator.compare(a.text, b.text)
+  );
+
+  if (!sortedChoices.length) {
     return (
-      <p className="text-sm text-slate-500 dark:text-white/60" role="status" aria-live="polite">
+      <p
+        className="text-sm text-slate-500 dark:text-white/60"
+        role="status"
+        aria-live="polite"
+      >
         No hay opciones disponibles.
       </p>
     );
@@ -29,19 +57,24 @@ function ChoiceInputBase({ choices = [], value, disabled, onSelect, name }: Prop
       aria-labelledby={`${groupId}-legend`}
       className="grid gap-2"
     >
-      {/* Etiqueta invisible del grupo (mejora a11y sin cambiar el layout) */}
+      {/* Etiqueta invisible del grupo (mejora a11y sin alterar el layout) */}
       <span id={`${groupId}-legend`} className="sr-only">
         Opciones
       </span>
 
-      {choices.map((c) => {
+      {sortedChoices.map((c) => {
         const id = `${groupId}-${c.id}`;
         const checked = value === c.id;
+
         return (
           <label
             key={c.id}
             htmlFor={id}
-            className={`${radioCls(checked)} ${disabled ? "opacity-60 cursor-not-allowed" : ""} focus-within:ring-2 focus-within:ring-skyBlue/60`}
+            className={[
+              radioCls(checked),
+              disabled ? "opacity-60 cursor-not-allowed" : "",
+              "focus-within:ring-2 focus-within:ring-skyBlue/60",
+            ].join(" ")}
           >
             <input
               id={id}
