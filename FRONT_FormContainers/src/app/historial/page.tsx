@@ -1,4 +1,7 @@
+/* eslint-disable jsx-a11y/role-supports-aria-props */
+/* eslint-disable react-hooks/exhaustive-deps */
 "use client";
+
 import { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -9,15 +12,19 @@ import {
 } from "@/lib/api.historial";
 import { listActors } from "@/lib/api.admin";
 
-/* ——— UI tokens ——— */
+/* ===================== UI tokens ===================== */
+const SHELL_PAGE =
+  "min-h-[calc(100vh-80px)] bg-gradient-to-b from-slate-50 to-white dark:from-[#0b1220] dark:to-[#0b1220]";
+const WRAPPER = "mx-auto max-w-[1150px] px-6 md:px-8 py-6 md:py-8";
+
 const CARD =
-  "rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-slate-900 shadow-sm";
+  "rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white/90 dark:bg-slate-900/90 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-white/60 supports-[backdrop-filter]:dark:bg-slate-900/60";
 const INPUT =
-  "rounded-xl border border-slate-300 dark:border-white/15 px-3 py-2 outline-none focus:ring-2 focus:ring-skyBlue/30 bg-white dark:bg-slate-900";
+  "rounded-xl border border-slate-300 dark:border-white/15 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300/40 dark:focus:ring-sky-600/40 bg-white dark:bg-slate-900";
 const BTN =
   "min-h-[40px] px-4 py-2 rounded-xl border border-slate-300 dark:border-white/20 hover:bg-slate-50 dark:hover:bg-white/5 transition disabled:opacity-50 disabled:cursor-not-allowed";
 
-/* ——— helpers ——— */
+/* ===================== helpers ===================== */
 const tz = "America/Bogota";
 const fmtDateTime = (iso?: string | null) =>
   iso
@@ -35,7 +42,8 @@ function statusVisual(state: "completo" | "pendiente") {
       icon: "✅",
       label: "Completo",
       bar: "bg-emerald-500",
-      badge: "bg-emerald-50 text-emerald-700 border-emerald-200/70 dark:bg-emerald-400/10 dark:text-emerald-300 dark:border-emerald-300/20",
+      badge:
+        "bg-emerald-50 text-emerald-700 border-emerald-200/70 dark:bg-emerald-400/10 dark:text-emerald-300 dark:border-emerald-300/20",
       dot: "bg-emerald-500",
     };
   }
@@ -43,13 +51,13 @@ function statusVisual(state: "completo" | "pendiente") {
     icon: "⏳",
     label: "Pendiente",
     bar: "bg-amber-400",
-    badge: "bg-amber-50 text-amber-800 border-amber-200/70 dark:bg-amber-400/10 dark:text-amber-300 dark:border-amber-300/20",
+    badge:
+      "bg-amber-50 text-amber-800 border-amber-200/70 dark:bg-amber-400/10 dark:text-amber-300 dark:border-amber-300/20",
     dot: "bg-amber-400",
   };
 }
 
-/* ——— dedupe ——— */
-
+/* ===================== dedupe ===================== */
 function mergeActors(primary: HistorialRow, secondary?: HistorialRow): HistorialRow {
   if (!secondary) return primary;
   return {
@@ -58,17 +66,12 @@ function mergeActors(primary: HistorialRow, secondary?: HistorialRow): Historial
     transportista: primary.transportista ?? secondary.transportista ?? null,
   };
 }
-
 function pickBetter(a: HistorialRow, b: HistorialRow) {
   const score = (x: HistorialRow) => (x.fase1_id ? 1 : 0) + (x.fase2_id ? 1 : 0);
   const ts = (x: HistorialRow) =>
     new Date(x.ultima_fecha_cierre || x.fecha_salida || x.fecha_entrada || 0).getTime();
-
-  // Elige la “mejor” por puntaje y luego por fecha
-  const better = score(a) !== score(b) ? (score(a) > score(b) ? a : b) : (ts(a) >= ts(b) ? a : b);
+  const better = score(a) !== score(b) ? (score(a) > score(b) ? a : b) : ts(a) >= ts(b) ? a : b;
   const other = better === a ? b : a;
-
-  // Merge solo de actores para no perder proveedor/transportista
   return mergeActors(better, other);
 }
 function normalizeRows(input: HistorialRow[]): HistorialRow[] {
@@ -81,13 +84,13 @@ function normalizeRows(input: HistorialRow[]): HistorialRow[] {
   return Array.from(map.values());
 }
 
-/* ——— key única para React ——— */
+/* ===================== key única ===================== */
 function rowKey(r: HistorialRow, index?: number) {
   const baseKey = `${r.regulador_id ?? "reg"}::${r.fase1_id ?? "_"}::${r.fase2_id ?? "_"}::${r.placa ?? "_"}`;
   return index !== undefined ? `${baseKey}::${index}` : baseKey;
 }
 
-/* ——— tipos ——— */
+/* ===================== tipos ===================== */
 type Estado = "todos" | "completo" | "pendiente";
 type SortKey = HistorialQuery["sort"];
 type SortDir = HistorialQuery["dir"];
@@ -100,7 +103,7 @@ type ActorOption = {
 };
 type ViewMode = "cards" | "table";
 
-/* ——— utils URL ——— */
+/* ===================== utils URL ===================== */
 function setQuery(router: ReturnType<typeof useRouter>, params: URLSearchParams, kv: Record<string, any>) {
   const p = new URLSearchParams(params.toString());
   Object.entries(kv).forEach(([k, v]) => {
@@ -110,23 +113,26 @@ function setQuery(router: ReturnType<typeof useRouter>, params: URLSearchParams,
   router.replace(`?${p.toString()}`);
 }
 
+/* ===================== Página (contenido) ===================== */
 function HistorialContent() {
   const router = useRouter();
   const urlParams = useSearchParams();
 
-  /* ——— Filtros ——— */
+  /* ---- Filtros ---- */
   const [desde, setDesde] = useState<string>(urlParams.get("desde") || "");
   const [hasta, setHasta] = useState<string>(urlParams.get("hasta") || "");
   const [estado, setEstado] = useState<Estado>((urlParams.get("estado") as Estado) || "completo");
   const [search, setSearch] = useState<string>(urlParams.get("q") || "");
 
-  /* ——— Actor ——— */
+  /* ---- Actor ---- */
   const [actorTipo, setActorTipo] = useState<ActorTipo>((urlParams.get("actor_tipo") as ActorTipo) || "todos");
   const [actorInput, setActorInput] = useState<string>(urlParams.get("actor_text") || "");
   const [actorSel, setActorSel] = useState<ActorOption | null>(() => {
     const id = urlParams.get("actor_id");
     const name = urlParams.get("actor_name");
-    const tipo = urlParams.get("actor_tipo_api") || (actorTipo === "proveedor" ? "PROVEEDOR" : actorTipo === "transportista" ? "TRANSPORTISTA" : "");
+    const tipo =
+      urlParams.get("actor_tipo_api") ||
+      (actorTipo === "proveedor" ? "PROVEEDOR" : actorTipo === "transportista" ? "TRANSPORTISTA" : "");
     return id ? { id, nombre: name || id, documento: "", tipo } : null;
   });
   const [actorOpts, setActorOpts] = useState<ActorOption[]>([]);
@@ -135,35 +141,35 @@ function HistorialContent() {
   const actorInputRef = useRef<HTMLInputElement>(null);
   const actorRef = useRef<HTMLDivElement | null>(null);
 
-  /* ——— Orden/paginación ——— */
+  /* ---- Orden/paginación ---- */
   const [sort, setSort] = useState<SortKey>((urlParams.get("sort") as SortKey) || "reciente");
   const [dir, setDir] = useState<SortDir>((urlParams.get("dir") as SortDir) || "desc");
   const [page, setPage] = useState<number>(Number(urlParams.get("page") || 1));
   const [pageSize, setPageSize] = useState<number>(Number(urlParams.get("pageSize") || 20));
 
-  /* ——— Vista ——— */
+  /* ---- Vista ---- */
   const [view, setView] = useState<ViewMode>((urlParams.get("view") as ViewMode) || "cards");
 
-  /* ——— Datos ——— */
+  /* ---- Datos ---- */
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<HistorialRow[]>([]);
   const [count, setCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  /* ——— Contadores globales ——— */
+  /* ---- Contadores globales ---- */
   const [countComp, setCountComp] = useState<number | null>(null);
   const [countPend, setCountPend] = useState<number | null>(null);
 
-  /* ——— Menú y fecha ——— */
+  /* ---- Menú y fecha ---- */
   const [menuOpen, setMenuOpen] = useState(false);
   const [dateOpen, setDateOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const dateRef = useRef<HTMLDivElement | null>(null);
 
-  /* ——— Autorefresh ——— */
+  /* ---- Autorefresh ---- */
   const [autoRefresh, setAutoRefresh] = useState<boolean>(urlParams.get("auto") === "1");
 
-  /* ——— Anti-race para load() ——— */
+  /* ---- Anti-race para load() ---- */
   const loadSeq = useRef(0);
 
   useEffect(() => {
@@ -173,11 +179,22 @@ function HistorialContent() {
       if (dateRef.current && !dateRef.current.contains(t)) setDateOpen(false);
       if (actorRef.current && !actorRef.current.contains(t)) setActorPopoverOpen(false);
     }
+    function onEsc(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setMenuOpen(false);
+        setDateOpen(false);
+        setActorPopoverOpen(false);
+      }
+    }
     document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onEsc);
+    };
   }, []);
 
-  /* ——— Load principal ——— */
+  /* ---- Load principal ---- */
   async function load() {
     const mySeq = ++loadSeq.current;
     try {
@@ -185,19 +202,32 @@ function HistorialContent() {
       setLoading(true);
 
       setQuery(router, urlParams, {
-        desde, hasta, estado, q: search,
+        desde,
+        hasta,
+        estado,
+        q: search,
         actor_tipo: actorTipo,
         actor_text: actorSel ? "" : actorInput,
         actor_id: actorSel?.id,
         actor_name: actorSel?.nombre,
         actor_tipo_api: actorSel?.tipo,
-        sort, dir, page, pageSize, view, auto: autoRefresh ? "1" : "",
+        sort,
+        dir,
+        page,
+        pageSize,
+        view,
+        auto: autoRefresh ? "1" : "",
       });
 
       const { results, count } = await fetchHistorialEnriched(
         { fecha_desde: desde || undefined, fecha_hasta: hasta || undefined, solo_completados: estado === "completo" },
         {
-          search, estado, sort, dir, page, pageSize,
+          search,
+          estado,
+          sort,
+          dir,
+          page,
+          pageSize,
           actor_tipo: actorTipo === "todos" ? "todos" : actorTipo,
           actor_text: actorSel ? "" : actorInput,
           actor_id_exact: actorSel?.id ?? null,
@@ -213,11 +243,31 @@ function HistorialContent() {
       const [c1, c2] = await Promise.all([
         fetchHistorialEnriched(
           { fecha_desde: desde || undefined, fecha_hasta: hasta || undefined, solo_completados: true },
-          { search, estado: "completo", sort: "reciente", dir: "desc", page: 1, pageSize: 1, actor_tipo: actorTipo === "todos" ? "todos" : actorTipo, actor_text: actorSel ? "" : actorInput, actor_id_exact: actorSel?.id ?? null }
+          {
+            search,
+            estado: "completo",
+            sort: "reciente",
+            dir: "desc",
+            page: 1,
+            pageSize: 1,
+            actor_tipo: actorTipo === "todos" ? "todos" : actorTipo,
+            actor_text: actorSel ? "" : actorInput,
+            actor_id_exact: actorSel?.id ?? null,
+          }
         ),
         fetchHistorialEnriched(
           { fecha_desde: desde || undefined, fecha_hasta: hasta || undefined, solo_completados: false },
-          { search, estado: "pendiente", sort: "reciente", dir: "desc", page: 1, pageSize: 1, actor_tipo: actorTipo === "todos" ? "todos" : actorTipo, actor_text: actorSel ? "" : actorInput, actor_id_exact: actorSel?.id ?? null }
+          {
+            search,
+            estado: "pendiente",
+            sort: "reciente",
+            dir: "desc",
+            page: 1,
+            pageSize: 1,
+            actor_tipo: actorTipo === "todos" ? "todos" : actorTipo,
+            actor_text: actorSel ? "" : actorInput,
+            actor_id_exact: actorSel?.id ?? null,
+          }
         ),
       ]);
 
@@ -233,100 +283,172 @@ function HistorialContent() {
     }
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, sort, dir, pageSize, view]);
+  useEffect(() => {
+    load();
+  }, [page, sort, dir, pageSize, view]);
 
   useEffect(() => {
     if (!autoRefresh) return;
     const id = setInterval(load, 30000);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh, desde, hasta, estado, search, actorTipo, actorInput, actorSel, sort, dir, page, pageSize]);
 
-  /* ——— Autocomplete ——— */
+  /* ---- Autocomplete ---- */
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
 
     if (actorTipo === "todos" || !actorInput.trim() || actorSel) {
-      setActorOpts([]); return () => controller.abort();
+      setActorOpts([]);
+      return () => controller.abort();
     }
 
     setActorLoading(true);
     const t = setTimeout(async () => {
       try {
-        const tipoParam = actorTipo === "proveedor" ? "PROVEEDOR" : actorTipo === "transportista" ? "TRANSPORTISTA" : "";
+        const tipoParam =
+          actorTipo === "proveedor" ? "PROVEEDOR" : actorTipo === "transportista" ? "TRANSPORTISTA" : "";
         const list = await listActors({ tipo: tipoParam, search: actorInput.trim() });
         if (!active) return;
-        setActorOpts((list || []).map((a: any) => ({ id: a.id, nombre: a.nombre, documento: a.documento, tipo: a.tipo })));
+        setActorOpts(
+          (list || []).map((a: any) => ({ id: a.id, nombre: a.nombre, documento: a.documento, tipo: a.tipo }))
+        );
       } finally {
         if (active) setActorLoading(false);
       }
     }, 250);
 
-    return () => { active = false; clearTimeout(t); controller.abort(); };
+    return () => {
+      active = false;
+      clearTimeout(t);
+      controller.abort();
+    };
   }, [actorInput, actorTipo, actorSel]);
 
-  /* ——— helpers UI ——— */
+  /* ---- helpers UI ---- */
   function clearActorSelection() {
-    setActorSel(null); setActorInput(""); setActorOpts([]); actorInputRef.current?.focus(); setPage(1);
+    setActorSel(null);
+    setActorInput("");
+    setActorOpts([]);
+    actorInputRef.current?.focus();
+    setPage(1);
   }
   function toggleSort(next: Exclude<SortKey, undefined>) {
-    if (sort === next) setDir((d) => (d === "asc" ? "desc" : "asc")); else { setSort(next); setDir("asc"); }
+    if (sort === next) setDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setSort(next);
+      setDir("asc");
+    }
     setPage(1);
   }
   async function exportCSVAll() {
     try {
       const { results: all } = await fetchHistorialEnriched(
         { fecha_desde: desde || undefined, fecha_hasta: hasta || undefined, solo_completados: estado === "completo" },
-        { search, estado, sort, dir, page: 1, pageSize: Math.max(count, 1), actor_tipo: actorTipo === "todos" ? "todos" : actorTipo, actor_text: actorSel ? "" : actorInput, actor_id_exact: actorSel?.id ?? null }
+        {
+          search,
+          estado,
+          sort,
+          dir,
+          page: 1,
+          pageSize: Math.max(count, 1),
+          actor_tipo: actorTipo === "todos" ? "todos" : actorTipo,
+          actor_text: actorSel ? "" : actorInput,
+          actor_id_exact: actorSel?.id ?? null,
+        }
       );
       exportHistorialCSV(normalizeRows(all), "historial.csv");
-    } catch (e: any) { alert(e?.message || "No se pudo exportar"); }
+    } catch (e: any) {
+      alert(e?.message || "No se pudo exportar");
+    }
   }
   function clearFilters() {
-    setDesde(""); setHasta(""); setEstado("completo"); setSearch("");
-    setActorTipo("todos"); setActorInput(""); setActorSel(null); setActorOpts([]);
-    setSort("reciente"); setDir("desc"); setPage(1); load();
+    setDesde("");
+    setHasta("");
+    setEstado("completo");
+    setSearch("");
+    setActorTipo("todos");
+    setActorInput("");
+    setActorSel(null);
+    setActorOpts([]);
+    setSort("reciente");
+    setDir("desc");
+    setPage(1);
+    load();
   }
   function applyPreset(p: "hoy" | "7" | "mes") {
-    const now = new Date(); const pad = (n: number) => String(n).padStart(2, "0");
-    const y = now.getFullYear(); const m = pad(now.getMonth() + 1); const d = pad(now.getDate());
-    if (p === "hoy") { setDesde(`${y}-${m}-${d}`); setHasta(`${y}-${m}-${d}`); }
-    if (p === "7") { const past = new Date(now); past.setDate(now.getDate() - 6);
-      const y2 = past.getFullYear(), m2 = pad(past.getMonth() + 1), d2 = pad(past.getDate());
-      setDesde(`${y2}-${m2}-${d2}`); setHasta(`${y}-${m}-${d}`); }
-    if (p === "mes") { const first = new Date(y, now.getMonth(), 1), last = new Date(y, now.getMonth() + 1, 0);
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const y = now.getFullYear();
+    const m = pad(now.getMonth() + 1);
+    const d = pad(now.getDate());
+    if (p === "hoy") {
+      setDesde(`${y}-${m}-${d}`);
+      setHasta(`${y}-${m}-${d}`);
+    }
+    if (p === "7") {
+      const past = new Date(now);
+      past.setDate(now.getDate() - 6);
+      const y2 = past.getFullYear(),
+        m2 = pad(past.getMonth() + 1),
+        d2 = pad(past.getDate());
+      setDesde(`${y2}-${m2}-${d2}`);
+      setHasta(`${y}-${m}-${d}`);
+    }
+    if (p === "mes") {
+      const first = new Date(y, now.getMonth(), 1),
+        last = new Date(y, now.getMonth() + 1, 0);
       setDesde(`${first.getFullYear()}-${pad(first.getMonth() + 1)}-${pad(first.getDate())}`);
-      setHasta(`${last.getFullYear()}-${pad(last.getMonth() + 1)}-${pad(last.getDate())}`); }
+      setHasta(`${last.getFullYear()}-${pad(last.getMonth() + 1)}-${pad(last.getDate())}`);
+    }
     setPage(1);
   }
   function copyLink() {
     const params: Record<string, string> = {
-      desde, hasta, estado, q: search, actor_tipo: actorTipo,
-      actor_text: actorSel ? "" : actorInput, actor_id: actorSel?.id || "", actor_name: actorSel?.nombre || "",
-      actor_tipo_api: actorSel?.tipo || "", dir: dir || "", page: String(page), pageSize: String(pageSize), view, auto: autoRefresh ? "1" : "",
+      desde,
+      hasta,
+      estado,
+      q: search,
+      actor_tipo: actorTipo,
+      actor_text: actorSel ? "" : actorInput,
+      actor_id: actorSel?.id || "",
+      actor_name: actorSel?.nombre || "",
+      actor_tipo_api: actorSel?.tipo || "",
+      dir: dir || "",
+      page: String(page),
+      pageSize: String(pageSize),
+      view,
+      auto: autoRefresh ? "1" : "",
     };
     if (sort) params.sort = sort;
     const qs = new URLSearchParams(params);
     navigator.clipboard.writeText(`${location.pathname}?${qs.toString()}`).then(() => alert("Enlace copiado"));
   }
 
-  /* ——— Tabla (vista alternativa, con iconos/colores) ——— */
+  /* ---- Tabla (vista alternativa) ---- */
   const Table = useMemo(() => {
     if (view !== "table") return null;
     return (
-      <div className={`${CARD} overflow-hidden`}>
+      <div className={`${CARD} overflow-hidden`} role="region" aria-label="Listado en tabla">
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 dark:bg-white/5 text-slate-600 dark:text-white/70">
+            <thead className="bg-slate-50/80 dark:bg-white/5 text-slate-600 dark:text-white/70 sticky top-0 backdrop-blur">
               <tr className="text-left">
                 <th className="px-4 py-3 w-36">
-                  <button className="underline-offset-2 hover:underline" onClick={() => toggleSort("reciente")}>
+                  <button
+                    className="underline-offset-2 hover:underline"
+                    onClick={() => toggleSort("reciente")}
+                    aria-sort={sort === "reciente" ? (dir === "asc" ? "ascending" : "descending") : "none"}
+                  >
                     ⏱ Reciente {sort === "reciente" ? (dir === "asc" ? "▲" : "▼") : ""}
                   </button>
                 </th>
                 <th className="px-4 py-3 w-28">
-                  <button className="underline-offset-2 hover:underline" onClick={() => toggleSort("placa")}>
+                  <button
+                    className="underline-offset-2 hover:underline"
+                    onClick={() => toggleSort("placa")}
+                    aria-sort={sort === "placa" ? (dir === "asc" ? "ascending" : "descending") : "none"}
+                  >
                     🚗 Placa {sort === "placa" ? (dir === "asc" ? "▲" : "▼") : ""}
                   </button>
                 </th>
@@ -340,26 +462,51 @@ function HistorialContent() {
             </thead>
             <tbody>
               {rows.map((r, idx) => {
-                const f1 = r.fase1_id, f2 = r.fase2_id;
+                const f1 = r.fase1_id,
+                  f2 = r.fase2_id;
                 const vis = statusVisual(r.estado === "completo" ? "completo" : "pendiente");
                 return (
                   <tr key={rowKey(r, idx)} className="border-t border-slate-200/70 dark:border-white/10">
                     <td className="px-4 py-3 whitespace-nowrap">{fmtDateTime(r.ultima_fecha_cierre)}</td>
                     <td className="px-4 py-3 font-medium">{r.placa || "SIN PLACA"}</td>
-                    <td className="px-4 py-3 truncate max-w-[220px]">{r.proveedor?.nombre || r.proveedor?.documento || "—"}</td>
-                    <td className="px-4 py-3 truncate max-w-[220px]">{r.transportista?.nombre || r.transportista?.documento || "—"}</td>
-                    <td className="px-4 py-3 truncate max-w-[240px]">{(r.cuestionario_fase1 || "—") + " · " + fmtDateTime(r.fecha_entrada)}</td>
-                    <td className="px-4 py-3 truncate max-w-[240px]">{(r.cuestionario_fase2 || "—") + " · " + fmtDateTime(r.fecha_salida)}</td>
+                    <td className="px-4 py-3 truncate max-w-[220px]">
+                      {r.proveedor?.nombre || r.proveedor?.documento || "—"}
+                    </td>
+                    <td className="px-4 py-3 truncate max-w-[220px]">
+                      {r.transportista?.nombre || r.transportista?.documento || "—"}
+                    </td>
+                    <td className="px-4 py-3 truncate max-w-[240px]">
+                      {(r.cuestionario_fase1 || "—") + " · " + fmtDateTime(r.fecha_entrada)}
+                    </td>
+                    <td className="px-4 py-3 truncate max-w-[240px]">
+                      {(r.cuestionario_fase2 || "—") + " · " + fmtDateTime(r.fecha_salida)}
+                    </td>
                     <td className="px-4 py-3">
-                      <span className={`inline-flex items-center gap-2 rounded-lg px-2 py-1 text-xs font-medium border ${vis.badge}`}>
+                      <span
+                        className={`inline-flex items-center gap-2 rounded-lg px-2 py-1 text-xs font-medium border ${vis.badge}`}
+                      >
                         <span className={`h-2.5 w-2.5 rounded-full ${vis.dot}`} />
                         {vis.icon} {vis.label}
                       </span>
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <button className={BTN} disabled={!f1} onClick={() => f1 && router.push(`/historial/${f1}`)}>🔎 Fase 1</button>
-                        <button className={BTN} disabled={!f2} onClick={() => f2 && router.push(`/historial/${f2}`)}>🔎 Fase 2</button>
+                        <button
+                          className={BTN}
+                          disabled={!f1}
+                          onClick={() => f1 && router.push(`/historial/${f1}`)}
+                          title="Ver detalle de Fase 1"
+                        >
+                          🔎 Fase 1
+                        </button>
+                        <button
+                          className={BTN}
+                          disabled={!f2}
+                          onClick={() => f2 && router.push(`/historial/${f2}`)}
+                          title="Ver detalle de Fase 2"
+                        >
+                          🔎 Fase 2
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -370,35 +517,50 @@ function HistorialContent() {
         </div>
       </div>
     );
-  }, [view, rows, sort, dir, router]);
+  }, [view, sort, dir, rows, toggleSort, router]);
 
-  /* ——— Render ——— */
+  /* ---- Render ---- */
   const totalPages = Math.max(1, Math.ceil(count / pageSize));
 
   return (
-    <main className="min-h-[calc(100vh-80px)] px-6 md:px-8 py-6 md:py-8">
-      <div className="mx-auto max-w-[1150px]">
-        {/* Header limpio */}
+    <main className={SHELL_PAGE}>
+      <div className={WRAPPER}>
+        {/* Header */}
         <div className="mb-4">
           <div className="flex items-end justify-between gap-4 flex-wrap">
             <div>
               <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">Historial</h1>
               <p className="mt-1 text-sm text-slate-600 dark:text-white/70">
-                ✅ Completos: <span className="font-medium">{countComp ?? "—"}</span> ·
-                {" "}⏳ Pendientes: <span className="font-medium">{countPend ?? "—"}</span> ·
-                {" "}Mostrando: <span className="font-medium">{count}</span>
+                ✅ Completos: <span className="font-medium">{countComp ?? "—"}</span> ·{" "}
+                ⏳ Pendientes: <span className="font-medium">{countPend ?? "—"}</span> ·{" "}
+                Mostrando: <span className="font-medium">{count}</span>
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <select value={view} onChange={(e) => setView(e.target.value as ViewMode)} className={INPUT} title="Vista">
+              <label className="sr-only" htmlFor="viewSelect">
+                Vista
+              </label>
+              <select
+                id="viewSelect"
+                value={view}
+                onChange={(e) => setView(e.target.value as ViewMode)}
+                className={INPUT}
+                title="Vista"
+              >
                 <option value="cards">Tarjetas</option>
                 <option value="table">Tabla</option>
               </select>
+              <label className="sr-only" htmlFor="orderSelect">
+                Orden
+              </label>
               <select
+                id="orderSelect"
                 value={`${sort}:${dir}`}
                 onChange={(e) => {
                   const [s, d] = e.target.value.split(":") as [SortKey, SortDir];
-                  setSort(s); setDir(d); setPage(1);
+                  setSort(s);
+                  setDir(d);
+                  setPage(1);
                 }}
                 className={INPUT}
                 title="Orden"
@@ -416,43 +578,90 @@ function HistorialContent() {
             <div className="grid md:grid-cols-4 gap-3">
               <div className="md:col-span-2">
                 <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2">🔎</span>
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2" aria-hidden>
+                    🔎
+                  </span>
                   <input
                     type="search"
                     placeholder="Buscar por placa…"
                     value={search}
-                    onChange={(e) => { setPage(1); setSearch(e.target.value); }}
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); setPage(1); load(); } }}
-                    className="w-full rounded-xl border px-9 py-3 outline-none focus:ring-2 focus:ring-skyBlue/30 tracking-wide"
+                    onChange={(e) => {
+                      setPage(1);
+                      setSearch(e.target.value);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        setPage(1);
+                        load();
+                      }
+                    }}
+                    className="w-full rounded-xl border px-9 py-3 outline-none focus:ring-2 focus:ring-sky-300/40 dark:focus:ring-sky-600/40 tracking-wide bg-white dark:bg-slate-900"
+                    aria-label="Buscar por placa"
                   />
                 </div>
               </div>
 
               {/* Rango de fechas */}
               <div className="relative" ref={dateRef}>
-                <button className={BTN} onClick={() => setDateOpen((v) => !v)} title="Rango de fechas">
-                  🗓 Rango{desde || hasta ? `: ${fmtShortDate(desde)} – ${fmtShortDate(hasta)}` : ""}
+                <button
+                  className={BTN}
+                  onClick={() => setDateOpen((v) => !v)}
+                  title="Rango de fechas"
+                  aria-haspopup="dialog"
+                  aria-expanded={dateOpen}
+                  aria-controls="date-popover"
+                >
+                  🗓 Rango
+                  {desde || hasta ? `: ${fmtShortDate(desde)} – ${fmtShortDate(hasta)}` : ""}
                 </button>
                 {dateOpen && (
-                  <div className={`${CARD} absolute z-20 mt-2 w-[320px] p-3`}>
+                  <div id="date-popover" className={`${CARD} absolute z-20 mt-2 w-[320px] p-3`}>
                     <div className="flex items-center gap-2">
-                      <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} className={INPUT} />
-                      <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} className={INPUT} />
+                      <label className="sr-only" htmlFor="desde">
+                        Desde
+                      </label>
+                      <input id="desde" type="date" value={desde} onChange={(e) => setDesde(e.target.value)} className={INPUT} />
+                      <label className="sr-only" htmlFor="hasta">
+                        Hasta
+                      </label>
+                      <input id="hasta" type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} className={INPUT} />
                     </div>
                     <div className="mt-3 flex items-center gap-2">
-                      <button className={BTN} onClick={() => applyPreset("hoy")}>Hoy</button>
-                      <button className={BTN} onClick={() => applyPreset("7")}>Últimos 7</button>
-                      <button className={BTN} onClick={() => applyPreset("mes")}>Este mes</button>
-                      <button className={BTN} onClick={() => { setDesde(""); setHasta(""); }}>Limpiar</button>
+                      <button className={BTN} onClick={() => applyPreset("hoy")}>
+                        Hoy
+                      </button>
+                      <button className={BTN} onClick={() => applyPreset("7")}>
+                        Últimos 7
+                      </button>
+                      <button className={BTN} onClick={() => applyPreset("mes")}>
+                        Este mes
+                      </button>
+                      <button
+                        className={BTN}
+                        onClick={() => {
+                          setDesde("");
+                          setHasta("");
+                        }}
+                      >
+                        Limpiar
+                      </button>
                     </div>
                   </div>
                 )}
               </div>
 
               {/* Estado */}
+              <label className="sr-only" htmlFor="estadoSelect">
+                Estado
+              </label>
               <select
+                id="estadoSelect"
                 value={estado}
-                onChange={(e) => { setEstado(e.target.value as Estado); setPage(1); }}
+                onChange={(e) => {
+                  setEstado(e.target.value as Estado);
+                  setPage(1);
+                }}
                 className={INPUT}
               >
                 <option value="completo">✅ Completos</option>
@@ -465,9 +674,18 @@ function HistorialContent() {
             <div className="mt-3 flex items-center gap-2 flex-wrap">
               <div className="relative" ref={actorRef}>
                 <div className="flex items-center gap-2">
+                  <label className="sr-only" htmlFor="actorTipo">
+                    Tipo de actor
+                  </label>
                   <select
+                    id="actorTipo"
                     value={actorTipo}
-                    onChange={(e) => { setActorTipo(e.target.value as ActorTipo); setActorSel(null); setActorInput(""); setActorOpts([]); }}
+                    onChange={(e) => {
+                      setActorTipo(e.target.value as ActorTipo);
+                      setActorSel(null);
+                      setActorInput("");
+                      setActorOpts([]);
+                    }}
                     className={INPUT}
                   >
                     <option value="todos">👥 Actor (todos)</option>
@@ -477,32 +695,61 @@ function HistorialContent() {
                   <input
                     ref={actorInputRef}
                     type="search"
-                    placeholder={actorTipo === "proveedor" ? "🏭 Proveedor (nombre/doc)…" : actorTipo === "transportista" ? "🚚 Transportista (nombre/doc)…" : "Selecciona tipo…"}
-                    value={actorSel ? (actorSel.nombre || actorSel.documento || actorSel.id) : actorInput}
-                    onChange={(e) => { setPage(1); setActorSel(null); setActorInput(e.target.value); }}
+                    placeholder={
+                      actorTipo === "proveedor"
+                        ? "🏭 Proveedor (nombre/doc)…"
+                        : actorTipo === "transportista"
+                        ? "🚚 Transportista (nombre/doc)…"
+                        : "Selecciona tipo…"
+                    }
+                    value={actorSel ? actorSel.nombre || actorSel.documento || actorSel.id : actorInput}
+                    onChange={(e) => {
+                      setPage(1);
+                      setActorSel(null);
+                      setActorInput(e.target.value);
+                    }}
                     disabled={actorTipo === "todos"}
                     className={`w-[260px] ${INPUT} ${actorTipo === "todos" ? "opacity-60 cursor-not-allowed" : ""}`}
+                    aria-label="Buscar actor"
                   />
-                  <button className={BTN} onClick={() => setActorPopoverOpen((v) => !v)}>🔎 Buscar</button>
-                  <button className={BTN} onClick={clearActorSelection}>🧹 Limpiar</button>
+                  <button
+                    className={BTN}
+                    onClick={() => setActorPopoverOpen((v) => !v)}
+                    aria-haspopup="listbox"
+                    aria-expanded={actorPopoverOpen}
+                    aria-controls="actor-popover"
+                    title="Buscar actor"
+                  >
+                    🔎 Buscar
+                  </button>
+                  <button className={BTN} onClick={clearActorSelection} title="Limpiar actor seleccionado">
+                    🧹 Limpiar
+                  </button>
                 </div>
 
                 {actorPopoverOpen && actorTipo !== "todos" && !actorSel && (
-                  <div className={`${CARD} absolute z-20 mt-2 w-[360px] p-2`}>
+                  <div id="actor-popover" className={`${CARD} absolute z-20 mt-2 w-[360px] p-2`}>
                     {actorLoading && <div className="px-3 py-2 text-sm text-slate-500">Buscando…</div>}
                     {!actorLoading && actorOpts.length === 0 && actorInput.trim() && (
                       <div className="px-3 py-2 text-sm text-slate-500">Sin resultados</div>
                     )}
                     {actorOpts.length > 0 && (
-                      <ul className="max-h-64 overflow-auto">
+                      <ul className="max-h-64 overflow-auto" role="listbox" aria-label="Resultados de actores">
                         {actorOpts.map((opt) => (
                           <li
                             key={opt.id}
+                            role="option"
+                            aria-selected={false}
                             className="px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-white/5 cursor-pointer rounded-lg"
-                            onClick={() => { setActorSel(opt); setActorPopoverOpen(false); }}
+                            onClick={() => {
+                              setActorSel(opt);
+                              setActorPopoverOpen(false);
+                            }}
                           >
                             <div className="font-medium">{opt.nombre || opt.documento || opt.id}</div>
-                            <div className="text-xs text-slate-500">{opt.tipo} {opt.documento ? `• ${opt.documento}` : ""}</div>
+                            <div className="text-xs text-slate-500">
+                              {opt.tipo} {opt.documento ? `• ${opt.documento}` : ""}
+                            </div>
                           </li>
                         ))}
                       </ul>
@@ -513,25 +760,56 @@ function HistorialContent() {
 
               <div className="ml-auto flex items-center gap-2">
                 <button
-                  className="min-h-[40px] px-4 py-2 rounded-xl bg-skyBlue text-white font-medium shadow hover:opacity-90 transition"
-                  onClick={() => { setPage(1); load(); }}
+                  className="min-h-[40px] px-4 py-2 rounded-xl bg-sky-600 text-white font-medium shadow-sm hover:bg-sky-700 transition"
+                  onClick={() => {
+                    setPage(1);
+                    load();
+                  }}
+                  title="Aplicar filtros"
                 >
                   Aplicar
                 </button>
 
                 <div className="relative" ref={menuRef}>
-                  <button className={BTN} onClick={() => setMenuOpen((v) => !v)} aria-haspopup="menu" aria-expanded={menuOpen}>
+                  <button
+                    className={BTN}
+                    onClick={() => setMenuOpen((v) => !v)}
+                    aria-haspopup="menu"
+                    aria-expanded={menuOpen}
+                    aria-controls="more-menu"
+                    title="Más acciones"
+                  >
                     ⋯
                   </button>
                   {menuOpen && (
-                    <div className={`${CARD} absolute right-0 mt-2 w-56 p-2 z-20`}>
-                      <button className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5" onClick={exportCSVAll} disabled={count === 0 || loading}>⤓ Exportar CSV</button>
-                      <button className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5" onClick={copyLink}>🔗 Copiar enlace</button>
+                    <div id="more-menu" className={`${CARD} absolute right-0 mt-2 w-56 p-2 z-20`}>
+                      <button
+                        className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5"
+                        onClick={exportCSVAll}
+                        disabled={count === 0 || loading}
+                      >
+                        ⤓ Exportar CSV
+                      </button>
+                      <button
+                        className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5"
+                        onClick={copyLink}
+                      >
+                        🔗 Copiar enlace
+                      </button>
                       <label className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5 cursor-pointer">
-                        <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
+                        <input
+                          type="checkbox"
+                          checked={autoRefresh}
+                          onChange={(e) => setAutoRefresh(e.target.checked)}
+                        />
                         🔄 Autorefresh 30s
                       </label>
-                      <button className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5 text-red-600" onClick={clearFilters}>🧹 Limpiar filtros</button>
+                      <button
+                        className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5 text-red-600"
+                        onClick={clearFilters}
+                      >
+                        🧹 Limpiar filtros
+                      </button>
                     </div>
                   )}
                 </div>
@@ -554,23 +832,31 @@ function HistorialContent() {
         ) : error ? (
           <div className={`${CARD} p-6 md:p-8 text-center`}>
             <p className="text-red-600 mb-3">{error}</p>
-            <button onClick={load} className="px-4 py-2 rounded-xl bg-skyBlue text-white font-medium shadow hover:opacity-90 transition">Reintentar</button>
+            <button
+              onClick={load}
+              className="px-4 py-2 rounded-xl bg-sky-600 text-white font-medium shadow-sm hover:bg-sky-700 transition"
+            >
+              Reintentar
+            </button>
           </div>
         ) : count === 0 ? (
           <div className={`${CARD} p-10 text-center`}>
             <div className="text-3xl mb-1">🗂️</div>
-            <p className="text-base md:text-lg text-slate-700 dark:text-white/80">No hay registros para los filtros seleccionados.</p>
+            <p className="text-base md:text-lg text-slate-700 dark:text-white/80">
+              No hay registros para los filtros seleccionados.
+            </p>
           </div>
         ) : view === "table" ? (
           Table
         ) : (
           <ul className="grid gap-4">
             {rows.map((r, idx) => {
-              const f1 = r.fase1_id, f2 = r.fase2_id;
+              const f1 = r.fase1_id,
+                f2 = r.fase2_id;
               const state = r.estado === "completo" ? "completo" : "pendiente";
               const vis = statusVisual(state);
               return (
-                <li key={rowKey(r, idx)} className={`${CARD} p-0 overflow-hidden transition hover:shadow-md`}>
+                <li key={rowKey(r, idx)} className={`${CARD} p-0 overflow-hidden transition hover:shadow-xl`}>
                   <div className="flex">
                     {/* Barra de acento por estado */}
                     <div className={`w-1.5 ${vis.bar}`} />
@@ -581,28 +867,40 @@ function HistorialContent() {
                         <div className="min-w-0">
                           {/* Línea principal: estado + última actualización */}
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className={`inline-flex items-center gap-2 text-xs font-medium px-2 py-1 rounded-lg border ${vis.badge}`}>
+                            <span
+                              className={`inline-flex items-center gap-2 text-xs font-medium px-2 py-1 rounded-lg border ${vis.badge}`}
+                            >
                               <span className={`h-2.5 w-2.5 rounded-full ${vis.dot}`} />
                               {vis.icon} {vis.label}
                             </span>
-                            <span className="text-xs text-slate-500 dark:text-white/60">⏱ {fmtDateTime(r.ultima_fecha_cierre)}</span>
+                            <span className="text-xs text-slate-500 dark:text-white/60">
+                              ⏱ {fmtDateTime(r.ultima_fecha_cierre)}
+                            </span>
                           </div>
 
                           {/* Placa */}
                           <div className="mt-1.5 flex items-center gap-2">
-                            <span className="text-xl md:text-2xl">🚗</span>
-                            <div className="text-lg md:text-xl font-semibold tracking-wide">{r.placa || "SIN PLACA"}</div>
+                            <span className="text-xl md:text-2xl" aria-hidden>
+                              🚗
+                            </span>
+                            <div className="text-lg md:text-xl font-semibold tracking-wide">
+                              {r.placa || "SIN PLACA"}
+                            </div>
                           </div>
 
                           {/* Fases */}
                           <div className="mt-3 grid gap-1.5 text-sm md:text-base">
                             <div className="flex items-center gap-2 border-l-2 pl-3 border-sky-400">
                               <span className="text-sky-700 dark:text-sky-300">📥 Fase 1</span>
-                              <span className="opacity-70">· {(r.cuestionario_fase1 || "—")} · {fmtDateTime(r.fecha_entrada)}</span>
+                              <span className="opacity-70">
+                                · {(r.cuestionario_fase1 || "—")} · {fmtDateTime(r.fecha_entrada)}
+                              </span>
                             </div>
                             <div className="flex items-center gap-2 border-l-2 pl-3 border-indigo-400">
                               <span className="text-indigo-700 dark:text-indigo-300">📤 Fase 2</span>
-                              <span className="opacity-70">· {(r.cuestionario_fase2 || "—")} · {fmtDateTime(r.fecha_salida)}</span>
+                              <span className="opacity-70">
+                                · {(r.cuestionario_fase2 || "—")} · {fmtDateTime(r.fecha_salida)}
+                              </span>
                             </div>
                           </div>
 
@@ -610,14 +908,22 @@ function HistorialContent() {
                           <div className="mt-2 text-sm text-slate-600 dark:text-white/70 flex items-center gap-4 flex-wrap">
                             {r.proveedor && (
                               <span className="inline-flex items-center gap-1.5">
-                                <span className="text-sky-600 dark:text-sky-300">🏭</span>
-                                <span className="font-medium">{r.proveedor.nombre || r.proveedor.documento || r.proveedor.id}</span>
+                                <span className="text-sky-600 dark:text-sky-300" aria-hidden>
+                                  🏭
+                                </span>
+                                <span className="font-medium">
+                                  {r.proveedor.nombre || r.proveedor.documento || r.proveedor.id}
+                                </span>
                               </span>
                             )}
                             {r.transportista && (
                               <span className="inline-flex items-center gap-1.5">
-                                <span className="text-indigo-600 dark:text-indigo-300">🚚</span>
-                                <span className="font-medium">{r.transportista.nombre || r.transportista.documento || r.transportista.id}</span>
+                                <span className="text-indigo-600 dark:text-indigo-300" aria-hidden>
+                                  🚚
+                                </span>
+                                <span className="font-medium">
+                                  {r.transportista.nombre || r.transportista.documento || r.transportista.id}
+                                </span>
                               </span>
                             )}
                           </div>
@@ -625,8 +931,22 @@ function HistorialContent() {
 
                         {/* Acciones */}
                         <div className="flex flex-col items-end gap-2 shrink-0">
-                          <button className={BTN} disabled={!f1} onClick={() => f1 && router.push(`/historial/${f1}`)}>🔎 Ver Fase 1</button>
-                          <button className={BTN} disabled={!f2} onClick={() => f2 && router.push(`/historial/${f2}`)}>🔎 Ver Fase 2</button>
+                          <button
+                            className={BTN}
+                            disabled={!f1}
+                            onClick={() => f1 && router.push(`/historial/${f1}`)}
+                            title="Ver detalle de Fase 1"
+                          >
+                            🔎 Ver Fase 1
+                          </button>
+                          <button
+                            className={BTN}
+                            disabled={!f2}
+                            onClick={() => f2 && router.push(`/historial/${f2}`)}
+                            title="Ver detalle de Fase 2"
+                          >
+                            🔎 Ver Fase 2
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -641,16 +961,52 @@ function HistorialContent() {
         {count > 0 && (
           <div className="mt-5 flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-2">
-              <button onClick={() => { window.scrollTo({ top: 0, behavior: "smooth" }); setPage((p) => Math.max(1, p - 1)); }} className={BTN} disabled={page === 1}>← Anterior</button>
-              <span className="text-sm text-slate-600 dark:text-white/70">Página {page} de {totalPages}</span>
-              <button onClick={() => { window.scrollTo({ top: 0, behavior: "smooth" }); setPage((p) => Math.min(totalPages, p + 1)); }} className={BTN} disabled={page >= totalPages}>Siguiente →</button>
+              <button
+                onClick={() => {
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                  setPage((p) => Math.max(1, p - 1));
+                }}
+                className={BTN}
+                disabled={page === 1}
+                title="Página anterior"
+              >
+                ← Anterior
+              </button>
+              <span className="text-sm text-slate-600 dark:text-white/70">
+                Página {page} de {totalPages}
+              </span>
+              <button
+                onClick={() => {
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                  setPage((p) => Math.min(totalPages, p + 1));
+                }}
+                className={BTN}
+                disabled={page >= totalPages}
+                title="Página siguiente"
+              >
+                Siguiente →
+              </button>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-sm">Tamaño:</span>
-              <select value={pageSize} onChange={(e) => { setPage(1); setPageSize(Number(e.target.value)); }} className={INPUT}>
-                <option value={20}>20</option><option value={50}>50</option><option value={100}>100</option>
+              <label className="text-sm" htmlFor="pageSizeSel">
+                Tamaño:
+              </label>
+              <select
+                id="pageSizeSel"
+                value={pageSize}
+                onChange={(e) => {
+                  setPage(1);
+                  setPageSize(Number(e.target.value));
+                }}
+                className={INPUT}
+              >
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
               </select>
-              <div className="text-sm text-slate-600 dark:text-white/70 ml-2">{count} resultado{count === 1 ? "" : "s"}</div>
+              <div className="text-sm text-slate-600 dark:text-white/70 ml-2">
+                {count} resultado{count === 1 ? "" : "s"}
+              </div>
             </div>
           </div>
         )}
@@ -659,6 +1015,7 @@ function HistorialContent() {
   );
 }
 
+/* ===================== Page wrapper con Suspense ===================== */
 export default function HistorialPage() {
   return (
     <Suspense

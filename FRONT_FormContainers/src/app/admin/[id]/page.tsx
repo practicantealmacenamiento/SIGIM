@@ -1,6 +1,18 @@
+/* eslint-disable @typescript-eslint/ban-ts-comment */
 "use client";
-import { genUUID } from "@/lib/uuid";
-import { useEffect, useMemo, useRef, useState } from "react";
+
+// ===============================================================
+// Administración — Editor de Formulario (page.tsx)
+// ---------------------------------------------------------------
+// Objetivos de esta versión:
+// - UI más consistente con la página general de Administración
+// - Accesibilidad (roles/aria, foco en errores, atajos de teclado)
+// - Mejor UX: autosave de borrador, toasts ligeros, chips de estado
+// - Herramientas de edición: colapsar/expandir, duplicar, mover, bulk de opciones
+// - Sin dependencias nuevas; mantiene compatibilidad con lib/api.admin
+// ===============================================================
+
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   getQuestionnaire,
@@ -12,52 +24,108 @@ import {
   type AdminChoice,
 } from "@/lib/api.admin";
 import { INPUT, radioCls } from "@/lib/ui";
+import { genUUID } from "@/lib/uuid";
 
-/* ====== UI tokens ====== */
+/* ===================== UI tokens ===================== */
 const UI = {
+  page: "min-h-[calc(100vh-80px)] w-full bg-gradient-to-b from-slate-50 to-white dark:from-[#0b1220] dark:to-[#0b1220]",
   container: "mx-auto max-w-[1100px] px-6 md:px-8",
+  card: "rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white/90 dark:bg-slate-900/90 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-white/60 supports-[backdrop-filter]:dark:bg-slate-900/60",
   btn: "px-3 py-2 rounded-xl border border-slate-200/70 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-white/5 transition",
-  btnPrimary: "px-4 py-2 rounded-xl bg-sky-600 text-white shadow-sm hover:bg-sky-700 transition",
+  btnPrimary: "px-4 py-2 rounded-xl bg-sky-600 text-white shadow-sm hover:bg-sky-700 transition disabled:opacity-60",
   chip: "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
   chipInfo: "bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200",
   chipReq: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200",
-  card: "rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-slate-900 shadow-sm",
-  // icon buttons (compactos, corporativos)
   railBtn: "inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200/70 dark:border-white/15 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/5 transition",
   railBtnDanger: "inline-flex h-8 w-8 items-center justify-center rounded-full border border-rose-200/60 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition",
+  kbd: "inline-flex items-center gap-1 rounded-md px-1.5 py-[2px] text-[11px] font-medium border border-slate-200/70 dark:border-white/10 bg-slate-50 dark:bg-white/5",
 };
 
-const onAddChoice = (qIndex: number) => {
-  setForm((prev) => {
-    const next = structuredClone(prev);
-    const q = next.questions[qIndex];
-    const newChoice = { id: genUUID(), text: "", branch_to: null };
-    q.choices = Array.isArray(q.choices) ? [...q.choices, newChoice] : [newChoice];
-    return next;
-  });
-};
-/* ====== Iconos (paths estables) ====== */
+/* ===================== Iconos (paths estables) ===================== */
 function Icon({ d }: { d: string }) {
   return (
-    <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg
+      viewBox="0 0 24 24"
+      className="h-[18px] w-[18px]"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
       <path d={d} />
     </svg>
   );
 }
-const IChevronUp   = () => <Icon d="M6 14l6-6 6 6" />;
+const IChevronUp = () => <Icon d="M6 14l6-6 6 6" />;
 const IChevronDown = () => <Icon d="M6 10l6 6 6-6" />;
-const IArrowUp     = () => <Icon d="M12 19V5m0 0l-5 5m5-5l5 5" />;
-const IArrowDown   = () => <Icon d="M12 5v14m0 0l-5-5m5 5l5-5" />;
-const ICopy        = () => <Icon d="M16 16H8V8h8v8zM14 4H8a2 2 0 0 0-2 2v6" />;
-const ITrash       = () => <Icon d="M3 6h18M8 6V4h8v2m-1 0v12a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V6h10z" />;
+const IArrowUp = () => <Icon d="M12 19V5m0 0l-5 5m5-5l5 5" />;
+const IArrowDown = () => <Icon d="M12 5v14m0 0l-5-5m5 5l5-5" />;
+const ICopy = () => <Icon d="M16 16H8V8h8v8zM14 4H8a2 2 0 0 0-2 2v6" />;
+const ITrash = () => (
+  <Icon d="M3 6h18M8 6V4h8v2m-1 0v12a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V6h10z" />
+);
 
-const TYPES: AdminQuestion["type"][] = ["text", "number", "date", "file", "choice"];
+const TYPES: AdminQuestion["type"][] = [
+  "text",
+  "number",
+  "date",
+  "file",
+  "choice",
+];
 const FILE_MODES = ["image_only", "image_ocr", "ocr_only"] as const;
-const TAGS = ["none", "placa", "contenedor", "precinto", "proveedor", "transportista", "receptor"] as const;
+const TAGS = [
+  "none",
+  "placa",
+  "contenedor",
+  "precinto",
+  "proveedor",
+  "transportista",
+  "receptor",
+] as const;
 
+/* ===================== Toasts ligeros ===================== */
+function useToasts() {
+  const [items, setItems] = useState<
+    { id: number; type: "ok" | "err"; text: string }[]
+  >([]);
+  const idRef = useRef(0);
+
+  const push = useCallback((type: "ok" | "err", text: string) => {
+    const id = ++idRef.current;
+    setItems((xs) => [...xs, { id, type, text }]);
+    setTimeout(() => {
+      setItems((xs) => xs.filter((t) => t.id !== id));
+    }, 3200);
+  }, []);
+
+  const view = (
+    <div className="fixed z-[60] bottom-4 right-4 space-y-2">
+      {items.map((t) => (
+        <div
+          key={t.id}
+          role="status"
+          className={`flex items-center gap-3 max-w-[360px] rounded-xl px-4 py-3 shadow-lg border ${
+            t.type === "ok"
+              ? "bg-emerald-50/90 border-emerald-200/70 text-emerald-800 dark:bg-emerald-900/25 dark:text-emerald-200 dark:border-emerald-900/40"
+              : "bg-rose-50/90 border-rose-200/70 text-rose-800 dark:bg-rose-900/25 dark:text-rose-200 dark:border-rose-900/40"
+          }`}
+        >
+          <span className="text-sm leading-snug">{t.text}</span>
+        </div>
+      ))}
+    </div>
+  );
+
+  return { push, view } as const;
+}
+
+/* ===================== Página ===================== */
 export default function AdminEditorPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
+  const { push, view } = useToasts();
 
   const [orig, setOrig] = useState<AdminQuestionnaire | null>(null);
   const [qn, setQn] = useState<AdminQuestionnaire | null>(null);
@@ -68,21 +136,29 @@ export default function AdminEditorPage() {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const firstErrorRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => { installGlobalAuthFetch(); }, []);
+  useEffect(() => {
+    installGlobalAuthFetch();
+  }, []);
 
   // load + draft
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        setErr(null); setLoading(true);
+        setErr(null);
+        setLoading(true);
         const draftKey = `draft:${id}`;
-        const draft = typeof window !== "undefined" ? sessionStorage.getItem(draftKey) : null;
-        const data = draft ? (JSON.parse(draft) as AdminQuestionnaire) : await getQuestionnaire(id);
+        const draft =
+          typeof window !== "undefined"
+            ? sessionStorage.getItem(draftKey)
+            : null;
+        const data = draft
+          ? (JSON.parse(draft) as AdminQuestionnaire)
+          : await getQuestionnaire(id);
         if (!alive) return;
-        setOrig(data); setQn(data);
+        setOrig(data);
+        setQn(data);
         sessionStorage.removeItem(draftKey);
-        // no colapsar forzadamente en cada render; solo inicial
         const c: Record<string, boolean> = {};
         data.questions.forEach((q) => (c[q.id] = false));
         setCollapsed(c);
@@ -92,13 +168,22 @@ export default function AdminEditorPage() {
         if (alive) setLoading(false);
       }
     })();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, [id]);
 
   // dirty guard
-  const dirty = useMemo(() => !!orig && !!qn && JSON.stringify(orig) !== JSON.stringify(qn), [orig, qn]);
+  const dirty = useMemo(
+    () => !!orig && !!qn && JSON.stringify(orig) !== JSON.stringify(qn),
+    [orig, qn]
+  );
   useEffect(() => {
-    const onBeforeUnload = (e: BeforeUnloadEvent) => { if (!dirty) return; e.preventDefault(); e.returnValue = ""; };
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!dirty) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [dirty]);
@@ -119,7 +204,8 @@ export default function AdminEditorPage() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        if (e.shiftKey) saveOrderOnly(); else saveAll();
+        if (e.shiftKey) saveOrderOnly();
+        else saveAll();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -127,7 +213,7 @@ export default function AdminEditorPage() {
   });
 
   /* ---------- helpers & mutations ---------- */
-  function addQuestion() {
+  const addQuestion = useCallback(() => {
     if (!qn) return;
     const q: AdminQuestion = {
       id: genUUID(),
@@ -143,92 +229,147 @@ export default function AdminEditorPage() {
     };
     setQn({ ...qn, questions: [...qn.questions, q] });
     setCollapsed((s) => ({ ...s, [q.id]: false }));
-  }
-  function duplicateQuestion(qid: string) {
-    if (!qn) return;
-    const src = qn.questions.find((q) => q.id === qid); if (!src) return;
-    const clone: AdminQuestion = {
-      ...src,
-      id: genUUID(),
-      text: src.text + " (copia)",
-      order: qn.questions.length + 1,
-      choices: src.choices ? src.choices.map((c) => ({ ...c, id: genUUID() })) : null,
-    };
-    const next = [...qn.questions, clone].map((q, i) => ({ ...q, order: i + 1 }));
-    setQn({ ...qn, questions: next });
-    setCollapsed((s) => ({ ...s, [clone.id]: false }));
-  }
-  function removeQuestion(qid: string) {
-    if (!qn) return;
-    if (!confirm("¿Eliminar esta pregunta?")) return;
-    const next = qn.questions
-      .filter((q) => q.id !== qid)
-      .map((q, i) => ({
-        ...q, order: i + 1,
-        choices: q.choices ? q.choices.map((c) => ({ ...c, branch_to: c.branch_to === qid ? null : c.branch_to })) : null,
-      }));
-    setQn({ ...qn, questions: next });
-  }
-  function move(qid: string, dir: -1 | 1) {
-    if (!qn) return;
-    const idx = qn.questions.findIndex((q) => q.id === qid);
-    const j = idx + dir; if (idx < 0 || j < 0 || j >= qn.questions.length) return;
-    const arr = [...qn.questions]; [arr[idx], arr[j]] = [arr[j], arr[idx]];
-    setQn({ ...qn, questions: arr.map((q, i) => ({ ...q, order: i + 1 })) });
-  }
-  function updateQuestion(qid: string, patch: Partial<AdminQuestion>) {
-    if (!qn) return;
-    setQn({ ...qn, questions: qn.questions.map((q) => (q.id === qid ? { ...q, ...patch } : q)) });
-  }
-  function addChoice(qid: string) {
-    if (!qn) return;
-    setQn({
-      ...qn,
-      questions: qn.questions.map((q) => {
-        if (q.id !== qid) return q;
-        const list = q.choices ? [...q.choices] : [];
-        list.push({ id: genUUID(), text: "Opción", branch_to: null });
-        return { ...q, choices: list };
-      }),
-    });
-  }
-  function updateChoice(qid: string, cid: string, patch: Partial<AdminChoice>) {
-    if (!qn) return;
-    setQn({
-      ...qn,
-      questions: qn.questions.map((q) => {
-        if (q.id !== qid) return q;
-        return { ...q, choices: (q.choices || []).map((c) => (c.id === cid ? { ...c, ...patch } : c)) };
-      }),
-    });
-  }
-  function removeChoice(qid: string, cid: string) {
-    if (!qn) return;
-    setQn({
-      ...qn,
-      questions: qn.questions.map((q) => {
-        if (q.id !== qid) return q;
-        const remain = (q.choices || []).filter((c) => c.id !== cid);
-        return { ...q, choices: remain.length ? remain : null };
-      }),
-    });
-  }
-  function bulkAddChoices(qid: string, blob: string) {
-    if (!qn) return;
-    const lines = blob.split("\n").map((s) => s.trim()).filter(Boolean);
-    if (!lines.length) return;
-    setQn({
-      ...qn,
-      questions: qn.questions.map((q) => {
-        if (q.id !== qid) return q;
-        const base = q.choices ? [...q.choices] : [];
-        const added = lines.map((t) => ({ id: genUUID(), text: t, branch_to: null }));
-        return { ...q, choices: [...base, ...added] };
-      }),
-    });
-  }
+  }, [qn]);
 
-  async function saveAll() {
+  const duplicateQuestion = useCallback(
+    (qid: string) => {
+      if (!qn) return;
+      const src = qn.questions.find((q) => q.id === qid);
+      if (!src) return;
+      const clone: AdminQuestion = {
+        ...src,
+        id: genUUID(),
+        text: src.text + " (copia)",
+        order: qn.questions.length + 1,
+        choices: src.choices
+          ? src.choices.map((c) => ({ ...c, id: genUUID() }))
+          : null,
+      };
+      const next = [...qn.questions, clone].map((q, i) => ({ ...q, order: i + 1 }));
+      setQn({ ...qn, questions: next });
+      setCollapsed((s) => ({ ...s, [clone.id]: false }));
+      push("ok", "Pregunta duplicada");
+    },
+    [qn, push]
+  );
+
+  const removeQuestion = useCallback(
+    (qid: string) => {
+      if (!qn) return;
+      if (!confirm("¿Eliminar esta pregunta?")) return;
+      const next = qn.questions
+        .filter((q) => q.id !== qid)
+        .map((q, i) => ({
+          ...q,
+          order: i + 1,
+          choices: q.choices
+            ? q.choices.map((c) => ({
+                ...c,
+                branch_to: c.branch_to === qid ? null : c.branch_to,
+              }))
+            : null,
+        }));
+      setQn({ ...qn, questions: next });
+      push("ok", "Pregunta eliminada");
+    },
+    [qn, push]
+  );
+
+  const move = useCallback(
+    (qid: string, dir: -1 | 1) => {
+      if (!qn) return;
+      const idx = qn.questions.findIndex((q) => q.id === qid);
+      const j = idx + dir;
+      if (idx < 0 || j < 0 || j >= qn.questions.length) return;
+      const arr = [...qn.questions];
+      [arr[idx], arr[j]] = [arr[j], arr[idx]];
+      setQn({ ...qn, questions: arr.map((q, i) => ({ ...q, order: i + 1 })) });
+    },
+    [qn]
+  );
+
+  const updateQuestion = useCallback(
+    (qid: string, patch: Partial<AdminQuestion>) => {
+      if (!qn) return;
+      setQn({
+        ...qn,
+        questions: qn.questions.map((q) => (q.id === qid ? { ...q, ...patch } : q)),
+      });
+    },
+    [qn]
+  );
+
+  const addChoice = useCallback(
+    (qid: string) => {
+      if (!qn) return;
+      setQn({
+        ...qn,
+        questions: qn.questions.map((q) => {
+          if (q.id !== qid) return q;
+          const list = q.choices ? [...q.choices] : [];
+          list.push({ id: genUUID(), text: "Opción", branch_to: null });
+          return { ...q, choices: list };
+        }),
+      });
+    },
+    [qn]
+  );
+
+  const updateChoice = useCallback(
+    (qid: string, cid: string, patch: Partial<AdminChoice>) => {
+      if (!qn) return;
+      setQn({
+        ...qn,
+        questions: qn.questions.map((q) => {
+          if (q.id !== qid) return q;
+          return {
+            ...q,
+            choices: (q.choices || []).map((c) => (c.id === cid ? { ...c, ...patch } : c)),
+          };
+        }),
+      });
+    },
+    [qn]
+  );
+
+  const removeChoice = useCallback(
+    (qid: string, cid: string) => {
+      if (!qn) return;
+      setQn({
+        ...qn,
+        questions: qn.questions.map((q) => {
+          if (q.id !== qid) return q;
+          const remain = (q.choices || []).filter((c) => c.id !== cid);
+          return { ...q, choices: remain.length ? remain : null };
+        }),
+      });
+    },
+    [qn]
+  );
+
+  const bulkAddChoices = useCallback(
+    (qid: string, blob: string) => {
+      if (!qn) return;
+      const lines = blob
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (!lines.length) return;
+      setQn({
+        ...qn,
+        questions: qn.questions.map((q) => {
+          if (q.id !== qid) return q;
+          const base = q.choices ? [...q.choices] : [];
+          const added = lines.map((t) => ({ id: genUUID(), text: t, branch_to: null }));
+          return { ...q, choices: [...base, ...added] };
+        }),
+      });
+      push("ok", `${lines.length} opción(es) agregada(s)`);
+    },
+    [qn, push]
+  );
+
+  const saveAll = useCallback(async () => {
     if (!qn) return;
     const errors: string[] = [];
     if (!qn.title?.trim()) errors.push("El título no puede estar vacío.");
@@ -242,27 +383,47 @@ export default function AdminEditorPage() {
       setErr(errors[0]);
       setTimeout(() => setErr(null), 2800);
       firstErrorRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      push("err", errors[0]);
       return;
     }
     try {
-      setSaving(true); setErr(null);
+      setSaving(true);
+      setErr(null);
       const saved = await upsertQuestionnaire(qn);
-      setQn(saved); setOrig(saved);
+      setQn(saved);
+      setOrig(saved);
       setNote("Guardado ✅");
       setTimeout(() => setNote(null), 1200);
-    } catch (e: any) { setErr(e?.message || "No se pudo guardar"); }
-    finally { setSaving(false); }
-  }
-  async function saveOrderOnly() {
+      push("ok", "Formulario guardado");
+    } catch (e: any) {
+      const msg = e?.message || "No se pudo guardar";
+      setErr(msg);
+      push("err", msg);
+    } finally {
+      setSaving(false);
+    }
+  }, [qn, push]);
+
+  const saveOrderOnly = useCallback(async () => {
     if (!qn) return;
     try {
-      setSaving(true); setErr(null);
-      await reorderQuestions(qn.id, qn.questions.map((q) => q.id));
+      setSaving(true);
+      setErr(null);
+      await reorderQuestions(
+        qn.id,
+        qn.questions.map((q) => q.id)
+      );
       setNote("Orden actualizado");
       setTimeout(() => setNote(null), 900);
-    } catch (e: any) { setErr(e?.message || "No se pudo actualizar el orden"); }
-    finally { setSaving(false); }
-  }
+      push("ok", "Orden de preguntas actualizado");
+    } catch (e: any) {
+      const msg = e?.message || "No se pudo actualizar el orden";
+      setErr(msg);
+      push("err", msg);
+    } finally {
+      setSaving(false);
+    }
+  }, [qn, push]);
 
   const questionOptions = useMemo(
     () => (qn?.questions || []).map((q) => ({ id: q.id, label: `${q.order}. ${q.text.slice(0, 60)}` })),
@@ -274,21 +435,31 @@ export default function AdminEditorPage() {
   if (!qn) return null;
 
   return (
-    <main className="min-h-[calc(100vh-80px)] w-full">
+    <main className={UI.page}>
       {/* ===== Topbar ===== */}
       <div className="sticky top-0 z-30 border-b bg-white/80 dark:bg-zinc-900/80 backdrop-blur supports-[backdrop-filter]:bg-white/55">
         <div className={`${UI.container} py-3 flex items-center justify-between gap-3`}>
           <div className="flex items-center gap-3 min-w-0">
-            <button onClick={() => router.push("/admin")} className={UI.btn}>← Volver</button>
+            <button onClick={() => router.push("/admin")} className={UI.btn}>
+              ← Volver
+            </button>
             <h1 className="text-lg md:text-xl font-semibold truncate">
               {qn.title || "(sin título)"} <span className="text-slate-400">· {qn.version}</span>
             </h1>
             {dirty && <span className={`${UI.chip} ${UI.chipReq} ml-1`}>Cambios sin guardar</span>}
-            {note && <span className={`${UI.chip} bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200 ml-1`}>{note}</span>}
+            {note && (
+              <span className={`${UI.chip} bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200 ml-1`}>
+                {note}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={saveOrderOnly} disabled={saving} className={UI.btn} title="⇧+⌘/Ctrl+S">Guardar orden</button>
-            <button onClick={saveAll} disabled={saving} className={UI.btnPrimary}>{saving ? "Guardando…" : "Guardar todo"}</button>
+            <button onClick={saveOrderOnly} disabled={saving} className={UI.btn} title="⇧+⌘/Ctrl+S">
+              Guardar orden
+            </button>
+            <button onClick={saveAll} disabled={saving} className={UI.btnPrimary}>
+              {saving ? "Guardando…" : "Guardar todo"}
+            </button>
           </div>
         </div>
       </div>
@@ -299,15 +470,30 @@ export default function AdminEditorPage() {
           <div className="grid md:grid-cols-3 gap-4">
             <label className="block">
               <span className="text-sm">Título</span>
-              <input className={INPUT} value={qn.title} onChange={(e) => setQn({ ...qn, title: e.target.value })} placeholder="Ej. Inspección de Vehículos - Fase 1" />
+              <input
+                className={INPUT}
+                value={qn.title}
+                onChange={(e) => setQn({ ...qn, title: e.target.value })}
+                placeholder="Ej. Inspección de Vehículos - Fase 1"
+              />
             </label>
             <label className="block">
               <span className="text-sm">Versión</span>
-              <input className={INPUT} value={qn.version} onChange={(e) => setQn({ ...qn, version: e.target.value })} placeholder="v1.0" />
+              <input
+                className={INPUT}
+                value={qn.version}
+                onChange={(e) => setQn({ ...qn, version: e.target.value })}
+                placeholder="v1.0"
+              />
             </label>
             <label className="block">
               <span className="text-sm">Zona horaria</span>
-              <input className={INPUT} value={qn.timezone} onChange={(e) => setQn({ ...qn, timezone: e.target.value })} placeholder="America/Bogota" />
+              <input
+                className={INPUT}
+                value={qn.timezone}
+                onChange={(e) => setQn({ ...qn, timezone: e.target.value })}
+                placeholder="America/Bogota"
+              />
             </label>
           </div>
         </section>
@@ -319,22 +505,41 @@ export default function AdminEditorPage() {
               Preguntas <span className="text-slate-500">({qn.questions.length})</span>
             </h2>
             <div className="flex items-center gap-2">
-              <button onClick={() => setCollapsed(Object.fromEntries(qn.questions.map((q) => [q.id, true])))} className={UI.btn}>Colapsar todo</button>
-              <button onClick={() => setCollapsed(Object.fromEntries(qn.questions.map((q) => [q.id, false])))} className={UI.btn}>Expandir todo</button>
-              <button onClick={addQuestion} className={UI.btnPrimary}>Añadir pregunta</button>
+              <button
+                onClick={() =>
+                  setCollapsed(Object.fromEntries(qn.questions.map((q) => [q.id, true])))
+                }
+                className={UI.btn}
+              >
+                Colapsar todo
+              </button>
+              <button
+                onClick={() =>
+                  setCollapsed(Object.fromEntries(qn.questions.map((q) => [q.id, false])))
+                }
+                className={UI.btn}
+              >
+                Expandir todo
+              </button>
+              <button onClick={addQuestion} className={UI.btnPrimary}>
+                Añadir pregunta
+              </button>
             </div>
           </div>
 
           <ol className="space-y-4">
             {qn.questions.map((q, idx) => {
-              const hasEmpty = !q.text?.trim() || (q.type === "choice" && (!q.choices || q.choices.length === 0));
+              const hasEmpty =
+                !q.text?.trim() || (q.type === "choice" && (!q.choices || q.choices.length === 0));
               const isCollapsed = !!collapsed[q.id];
 
               return (
                 <li
                   key={q.id}
                   className={`group relative rounded-2xl border p-4 pr-24 bg-white dark:bg-slate-900 shadow-sm hover:shadow-md overflow-hidden transition ${
-                    hasEmpty ? "border-amber-300" : "border-slate-200/70 dark:border-white/10"
+                    hasEmpty
+                      ? "border-amber-300"
+                      : "border-slate-200/70 dark:border-white/10"
                   }`}
                 >
                   {idx === 0 && hasEmpty && <div ref={firstErrorRef} />}
@@ -362,17 +567,55 @@ export default function AdminEditorPage() {
                         )}
 
                         <span className={`${UI.chip} ${UI.chipInfo}`}>{q.type}</span>
-                        {q.required && <span className={`${UI.chip} ${UI.chipReq}`}>Requerida</span>}
-                        {q.type === "choice" && <span className={`${UI.chip} ${UI.chipInfo}`}>{q.choices?.length || 0} opciones</span>}
+                        {q.required && (
+                          <span className={`${UI.chip} ${UI.chipReq}`}>Requerida</span>
+                        )}
+                        {q.type === "choice" && (
+                          <span className={`${UI.chip} ${UI.chipInfo}`}>
+                            {q.choices?.length || 0} opciones
+                          </span>
+                        )}
 
                         {/* Toolbar colapsada (horizontal) */}
                         {isCollapsed && (
                           <div className="flex items-center gap-1 ml-auto shrink-0">
-                            <button onClick={() => setCollapsed((s) => ({ ...s, [q.id]: false }))} className={UI.railBtn} title="Expandir"><IChevronDown /></button>
-                            <button onClick={() => move(q.id, -1)} className={UI.railBtn} title="Mover arriba"><IArrowUp /></button>
-                            <button onClick={() => move(q.id, +1)} className={UI.railBtn} title="Mover abajo"><IArrowDown /></button>
-                            <button onClick={() => duplicateQuestion(q.id)} className={UI.railBtn} title="Duplicar"><ICopy /></button>
-                            <button onClick={() => removeQuestion(q.id)} className={UI.railBtnDanger} title="Eliminar"><ITrash /></button>
+                            <button
+                              onClick={() =>
+                                setCollapsed((s) => ({ ...s, [q.id]: false }))
+                              }
+                              className={UI.railBtn}
+                              title="Expandir"
+                            >
+                              <IChevronDown />
+                            </button>
+                            <button
+                              onClick={() => move(q.id, -1)}
+                              className={UI.railBtn}
+                              title="Mover arriba"
+                            >
+                              <IArrowUp />
+                            </button>
+                            <button
+                              onClick={() => move(q.id, +1)}
+                              className={UI.railBtn}
+                              title="Mover abajo"
+                            >
+                              <IArrowDown />
+                            </button>
+                            <button
+                              onClick={() => duplicateQuestion(q.id)}
+                              className={UI.railBtn}
+                              title="Duplicar"
+                            >
+                              <ICopy />
+                            </button>
+                            <button
+                              onClick={() => removeQuestion(q.id)}
+                              className={UI.railBtnDanger}
+                              title="Eliminar"
+                            >
+                              <ITrash />
+                            </button>
                           </div>
                         )}
                       </div>
@@ -388,11 +631,18 @@ export default function AdminEditorPage() {
                               onChange={(e) =>
                                 updateQuestion(q.id, {
                                   type: e.target.value as AdminQuestion["type"],
-                                  choices: e.target.value === "choice" ? (q.choices || []) : null,
+                                  choices:
+                                    e.target.value === "choice"
+                                      ? q.choices || []
+                                      : null,
                                 })
                               }
                             >
-                              {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                              {TYPES.map((t) => (
+                                <option key={t} value={t}>
+                                  {t}
+                                </option>
+                              ))}
                             </select>
                           </label>
 
@@ -402,9 +652,18 @@ export default function AdminEditorPage() {
                               <select
                                 className={INPUT}
                                 value={(q as any).file_mode || "image_only"}
-                                onChange={(e) => updateQuestion(q.id, { ...(q as any), file_mode: e.target.value } as any)}
+                                onChange={(e) =>
+                                  updateQuestion(q.id, {
+                                    ...(q as any),
+                                    file_mode: e.target.value,
+                                  } as any)
+                                }
                               >
-                                {FILE_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+                                {FILE_MODES.map((m) => (
+                                  <option key={m} value={m}>
+                                    {m}
+                                  </option>
+                                ))}
                               </select>
                             </label>
                           )}
@@ -414,9 +673,18 @@ export default function AdminEditorPage() {
                             <select
                               className={INPUT}
                               value={(q as any).semantic_tag || "none"}
-                              onChange={(e) => updateQuestion(q.id, { ...(q as any), semantic_tag: e.target.value } as any)}
+                              onChange={(e) =>
+                                updateQuestion(q.id, {
+                                  ...(q as any),
+                                  semantic_tag: e.target.value,
+                                } as any)
+                              }
                             >
-                              {TAGS.map((t) => <option key={t} value={t}>{t}</option>)}
+                              {TAGS.map((t) => (
+                                <option key={t} value={t}>
+                                  {t}
+                                </option>
+                              ))}
                             </select>
                           </label>
 
@@ -424,7 +692,14 @@ export default function AdminEditorPage() {
                             <span className="text-xs">Obligatoria</span>
                             <div className="mt-2">
                               <label className={radioCls(q.required)}>
-                                <input type="checkbox" checked={q.required} onChange={(e) => updateQuestion(q.id, { required: e.target.checked })} className="h-4 w-4" />
+                                <input
+                                  type="checkbox"
+                                  checked={q.required}
+                                  onChange={(e) =>
+                                    updateQuestion(q.id, { required: e.target.checked })
+                                  }
+                                  className="h-4 w-4"
+                                />
                                 <span className="ml-2">Requerida</span>
                               </label>
                             </div>
@@ -433,7 +708,11 @@ export default function AdminEditorPage() {
                           {q.type === "choice" && (
                             <label className="block">
                               <span className="text-xs">Opciones</span>
-                              <button type="button" onClick={() => addChoice(q.id)} className={`${UI.btn} w-full mt-1`}>
+                              <button
+                                type="button"
+                                onClick={() => addChoice(q.id)}
+                                className={`${UI.btn} w-full mt-1`}
+                              >
                                 Añadir opción
                               </button>
                             </label>
@@ -445,33 +724,55 @@ export default function AdminEditorPage() {
                       {q.type === "choice" && !isCollapsed && (
                         <div className="mt-4 grid gap-2">
                           {(q.choices || []).map((c) => (
-                            <div key={c.id} className="flex flex-col md:flex-row items-stretch md:items-center gap-2">
+                            <div
+                              key={c.id}
+                              className="flex flex-col md:flex-row items-stretch md:items-center gap-2"
+                            >
                               <input
                                 className={`${INPUT} !py-2 flex-1`}
                                 value={c.text}
-                                onChange={(e) => updateChoice(q.id, c.id, { text: e.target.value })}
+                                onChange={(e) =>
+                                  updateChoice(q.id, c.id, { text: e.target.value })
+                                }
                                 placeholder="Texto de la opción"
                               />
                               <select
                                 className={`${INPUT} !py-2 md:w-[320px]`}
                                 value={c.branch_to || ""}
-                                onChange={(e) => updateChoice(q.id, c.id, { branch_to: e.target.value || null })}
+                                onChange={(e) =>
+                                  updateChoice(q.id, c.id, {
+                                    branch_to: e.target.value || null,
+                                  })
+                                }
                               >
                                 <option value="">(sin ramificar)</option>
-                                {questionOptions.filter((o) => o.id !== q.id).map((o) => (
-                                  <option key={o.id} value={o.id}>{o.label}</option>
-                                ))}
+                                {questionOptions
+                                  .filter((o) => o.id !== q.id)
+                                  .map((o) => (
+                                    <option key={o.id} value={o.id}>
+                                      {o.label}
+                                    </option>
+                                  ))}
                               </select>
-                              <button type="button" onClick={() => removeChoice(q.id, c.id)} className={UI.railBtnDanger} title="Eliminar opción">
+                              <button
+                                type="button"
+                                onClick={() => removeChoice(q.id, c.id)}
+                                className={UI.railBtnDanger}
+                                title="Eliminar opción"
+                              >
                                 <ITrash />
                               </button>
                             </div>
                           ))}
 
-                          {(q.choices?.length ?? 0) === 0 && <p className="text-sm text-slate-500">No hay opciones.</p>}
+                          {(q.choices?.length ?? 0) === 0 && (
+                            <p className="text-sm text-slate-500">No hay opciones.</p>
+                          )}
 
                           <details className="mt-2">
-                            <summary className="text-xs text-slate-600 cursor-pointer">Pegar opciones (una por línea)</summary>
+                            <summary className="text-xs text-slate-600 cursor-pointer">
+                              Pegar opciones (una por línea)
+                            </summary>
                             <textarea
                               className={`${INPUT} mt-2 h-28`}
                               placeholder={"Opción A\nOpción B\nOpción C"}
@@ -482,7 +783,9 @@ export default function AdminEditorPage() {
                                 }
                               }}
                             />
-                            <p className="text-xs text-slate-500 mt-1">Al salir del área se agregarán las líneas no vacías.</p>
+                            <p className="text-xs text-slate-500 mt-1">
+                              Al salir del área se agregarán las líneas no vacías.
+                            </p>
                           </details>
                         </div>
                       )}
@@ -501,22 +804,82 @@ export default function AdminEditorPage() {
                   {/* RAIL ABSOLUTO (solo expandido >= md) */}
                   {!isCollapsed && (
                     <div className="hidden md:flex flex-col gap-2 absolute right-4 top-4 z-10">
-                      <button onClick={() => setCollapsed((s) => ({ ...s, [q.id]: true }))} className={UI.railBtn} title="Colapsar"><IChevronUp /></button>
-                      <button onClick={() => move(q.id, -1)} className={UI.railBtn} title="Mover arriba"><IArrowUp /></button>
-                      <button onClick={() => move(q.id, +1)} className={UI.railBtn} title="Mover abajo"><IArrowDown /></button>
-                      <button onClick={() => duplicateQuestion(q.id)} className={UI.railBtn} title="Duplicar"><ICopy /></button>
-                      <button onClick={() => removeQuestion(q.id)} className={UI.railBtnDanger} title="Eliminar"><ITrash /></button>
+                      <button
+                        onClick={() => setCollapsed((s) => ({ ...s, [q.id]: true }))}
+                        className={UI.railBtn}
+                        title="Colapsar"
+                      >
+                        <IChevronUp />
+                      </button>
+                      <button
+                        onClick={() => move(q.id, -1)}
+                        className={UI.railBtn}
+                        title="Mover arriba"
+                      >
+                        <IArrowUp />
+                      </button>
+                      <button
+                        onClick={() => move(q.id, +1)}
+                        className={UI.railBtn}
+                        title="Mover abajo"
+                      >
+                        <IArrowDown />
+                      </button>
+                      <button
+                        onClick={() => duplicateQuestion(q.id)}
+                        className={UI.railBtn}
+                        title="Duplicar"
+                      >
+                        <ICopy />
+                      </button>
+                      <button
+                        onClick={() => removeQuestion(q.id)}
+                        className={UI.railBtnDanger}
+                        title="Eliminar"
+                      >
+                        <ITrash />
+                      </button>
                     </div>
                   )}
 
                   {/* Acciones en móviles (expandido) */}
                   {!isCollapsed && (
                     <div className="md:hidden mt-3 ml-[-2px] flex items-center gap-2">
-                      <button onClick={() => setCollapsed((s) => ({ ...s, [q.id]: true }))} className={UI.railBtn} title="Colapsar"><IChevronUp /></button>
-                      <button onClick={() => move(q.id, -1)} className={UI.railBtn} title="Mover arriba"><IArrowUp /></button>
-                      <button onClick={() => move(q.id, +1)} className={UI.railBtn} title="Mover abajo"><IArrowDown /></button>
-                      <button onClick={() => duplicateQuestion(q.id)} className={UI.railBtn} title="Duplicar"><ICopy /></button>
-                      <button onClick={() => removeQuestion(q.id)} className={UI.railBtnDanger} title="Eliminar"><ITrash /></button>
+                      <button
+                        onClick={() => setCollapsed((s) => ({ ...s, [q.id]: true }))}
+                        className={UI.railBtn}
+                        title="Colapsar"
+                      >
+                        <IChevronUp />
+                      </button>
+                      <button
+                        onClick={() => move(q.id, -1)}
+                        className={UI.railBtn}
+                        title="Mover arriba"
+                      >
+                        <IArrowUp />
+                      </button>
+                      <button
+                        onClick={() => move(q.id, +1)}
+                        className={UI.railBtn}
+                        title="Mover abajo"
+                      >
+                        <IArrowDown />
+                      </button>
+                      <button
+                        onClick={() => duplicateQuestion(q.id)}
+                        className={UI.railBtn}
+                        title="Duplicar"
+                      >
+                        <ICopy />
+                      </button>
+                      <button
+                        onClick={() => removeQuestion(q.id)}
+                        className={UI.railBtnDanger}
+                        title="Eliminar"
+                      >
+                        <ITrash />
+                      </button>
                     </div>
                   )}
                 </li>
@@ -531,17 +894,22 @@ export default function AdminEditorPage() {
       {/* ===== Footer fijo ===== */}
       <div className="fixed bottom-0 inset-x-0 z-30 border-t bg-white/90 dark:bg-zinc-900/90 backdrop-blur">
         <div className={`${UI.container} py-3 flex items-center justify-between gap-3`}>
-          <div className="text-sm text-slate-600">{dirty ? "Cambios sin guardar" : "Todo guardado"}</div>
+          <div className="text-sm text-slate-600">
+            {dirty ? "Cambios sin guardar" : "Todo guardado"}
+          </div>
           <div className="flex items-center gap-2">
-            <button onClick={saveOrderOnly} disabled={saving} className={UI.btn} title="⇧+⌘/Ctrl+S">Guardar orden</button>
-            <button onClick={saveAll} disabled={saving} className={UI.btnPrimary}>{saving ? "Guardando…" : "Guardar todo"}</button>
+            <button onClick={saveOrderOnly} disabled={saving} className={UI.btn} title="⇧+⌘/Ctrl+S">
+              Guardar orden
+            </button>
+            <button onClick={saveAll} disabled={saving} className={UI.btnPrimary}>
+              {saving ? "Guardando…" : "Guardar todo"}
+            </button>
           </div>
         </div>
       </div>
+
+      {/* Render toasts */}
+      {view}
     </main>
   );
 }
-function setForm(arg0: (prev: any) => any) {
-  throw new Error("Function not implemented.");
-}
-

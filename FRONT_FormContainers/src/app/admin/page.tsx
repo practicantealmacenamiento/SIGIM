@@ -1,10 +1,22 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 "use client";
 
-import { genUUID } from "@/lib/uuid";
-import { useEffect, useMemo, useRef, useState } from "react";
+// ===============================================================
+// Administración — Page
+// Gestión unificada de: Formularios, Actores y Usuarios
+// ---------------------------------------------------------------
+// Objetivos de esta versión:
+// - UI más pulida (espaciados, sombras suaves, gradientes discretos)
+// - Accesibilidad (aria-*, foco, roles)
+// - Feedback al usuario (toasts ligeros y no intrusivos)
+// - Estructura clara por secciones, sin lógica de negocio en la vista
+// - Mantener compatibilidad con lib/api.admin ya existente
+// ===============================================================
+
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+
 import {
   // Auth
   isAuthenticated,
@@ -33,42 +45,117 @@ import {
   type Paginated,
 } from "@/lib/api.admin";
 
-/* ===================== Tokens de estilo ===================== */
+/* ===================== Tokens de estilo (UI) ===================== */
 const shell = {
-  page: "min-h-[calc(100vh-80px)] w-full bg-gradient-to-b from-slate-50 to-white dark:from-[#0b1220] dark:to-[#0b1220]",
+  page:
+    "min-h-[calc(100vh-80px)] w-full bg-gradient-to-b from-slate-50 to-white dark:from-[#0b1220] dark:to-[#0b1220]",
   container: "mx-auto max-w-[1200px] px-6 md:px-8 py-8",
-  card: "rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white/90 dark:bg-slate-900/90 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-white/60 supports-[backdrop-filter]:dark:bg-slate-900/60",
-  input: "w-full h-11 px-10 rounded-xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-slate-950 text-sm outline-none focus:ring-2 focus:ring-sky-300 dark:focus:ring-sky-600",
-  select: "w-full h-11 px-3 rounded-xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-slate-950 text-sm outline-none focus:ring-2 focus:ring-sky-300 dark:focus:ring-sky-600",
-  btn: "px-3 py-2 rounded-xl border border-slate-200/70 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-white/5 transition",
-  btnPrimary: "px-4 py-2.5 rounded-xl bg-sky-600 text-white font-medium shadow-sm hover:bg-sky-700 transition",
-  iconBtn: "inline-flex items-center justify-center h-10 w-10 rounded-xl border border-slate-200/70 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-white/5 transition",
-  pillTabs: "flex gap-1 rounded-2xl p-1 border bg-white/80 dark:bg-slate-900/80 border-slate-200/70 dark:border-white/10 shadow-sm",
+  card:
+    "rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white/90 dark:bg-slate-900/90 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-white/60 supports-[backdrop-filter]:dark:bg-slate-900/60",
+  input:
+    "w-full h-11 px-10 rounded-xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-slate-950 text-sm outline-none focus:ring-2 focus:ring-sky-300 dark:focus:ring-sky-600",
+  select:
+    "w-full h-11 px-3 rounded-xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-slate-950 text-sm outline-none focus:ring-2 focus:ring-sky-300 dark:focus:ring-sky-600",
+  btn:
+    "px-3 py-2 rounded-xl border border-slate-200/70 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-white/5 transition",
+  btnPrimary:
+    "px-4 py-2.5 rounded-xl bg-sky-600 text-white font-medium shadow-sm hover:bg-sky-700 transition disabled:opacity-60 disabled:cursor-not-allowed",
+  iconBtn:
+    "inline-flex items-center justify-center h-10 w-10 rounded-xl border border-slate-200/70 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-white/5 transition disabled:opacity-40",
+  pillTabs:
+    "flex gap-1 rounded-2xl p-1 border bg-white/80 dark:bg-slate-900/80 border-slate-200/70 dark:border-white/10 shadow-sm",
   pill: (active: boolean) =>
-    `px-4 py-2 rounded-xl text-sm ${active ? "bg-slate-100 dark:bg-white/10 font-medium" : "hover:bg-slate-50 dark:hover:bg-white/5"}`,
+    `px-4 py-2 rounded-xl text-sm ${
+      active
+        ? "bg-slate-100 dark:bg-white/10 font-medium"
+        : "hover:bg-slate-50 dark:hover:bg-white/5"
+    }`,
   th: "px-4 py-3 font-semibold text-slate-600 dark:text-slate-300 text-xs uppercase tracking-wide",
   td: "px-4 py-3 text-sm",
-  kbd: "inline-flex items-center gap-1 rounded-md px-1.5 py-[2px] text-[11px] font-medium border border-slate-200/70 dark:border-white/10 bg-slate-50 dark:bg-white/5",
+  kbd:
+    "inline-flex items-center gap-1 rounded-md px-1.5 py-[2px] text-[11px] font-medium border border-slate-200/70 dark:border-white/10 bg-slate-50 dark:bg-white/5",
 };
 
+/* ===================== Iconos mínimos (SVG) ===================== */
 function SearchIcon() {
   return (
-    <svg className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 opacity-60" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <svg
+      className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 opacity-60"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+    >
       <path d="M15.5 14h-.79l-.28-.27A6.5 6.5 0 1 0 14 15.5l.27.28v.79l5 5 1.5-1.5-5-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z" />
     </svg>
   );
 }
+function XIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M18.3 5.71a1 1 0 0 0-1.41 0L12 10.59 7.11 5.7A1 1 0 0 0 5.7 7.11L10.59 12l-4.9 4.89a1 1 0 1 0 1.41 1.41L12 13.41l4.89 4.9a1 1 0 0 0 1.41-1.42L13.41 12l4.9-4.89a1 1 0 0 0-.01-1.4z" />
+    </svg>
+  );
+}
 
-/* ===================== Utilities ===================== */
+/* ===================== Utilidades y hooks ===================== */
 function useDebounced<T>(value: T, delay = 350) {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {
     const id = setTimeout(() => setDebounced(value), delay);
     return () => clearTimeout(id);
   }, [value, delay]);
-  return debounced;
+  return debounced as T;
 }
 
+// Toasts ligeros para feedback (éxito/error)
+function useToasts() {
+  const [items, setItems] = useState<
+    { id: number; type: "ok" | "err"; text: string }[]
+  >([]);
+  const idRef = useRef(0);
+
+  const push = useCallback((type: "ok" | "err", text: string) => {
+    const id = ++idRef.current;
+    setItems((xs) => [...xs, { id, type, text }]);
+    // Autocierre a 3.5s
+    setTimeout(() => {
+      setItems((xs) => xs.filter((t) => t.id !== id));
+    }, 3500);
+  }, []);
+
+  const remove = useCallback((id: number) => {
+    setItems((xs) => xs.filter((t) => t.id !== id));
+  }, []);
+
+  const view = (
+    <div className="fixed z-[60] bottom-4 right-4 space-y-2">
+      {items.map((t) => (
+        <div
+          key={t.id}
+          role="status"
+          className={`flex items-center gap-3 max-w-[360px] rounded-xl px-4 py-3 shadow-lg border ${
+            t.type === "ok"
+              ? "bg-emerald-50/90 border-emerald-200/70 text-emerald-800 dark:bg-emerald-900/25 dark:text-emerald-200 dark:border-emerald-900/40"
+              : "bg-rose-50/90 border-rose-200/70 text-rose-800 dark:bg-rose-900/25 dark:text-rose-200 dark:border-rose-900/40"
+          }`}
+        >
+          <span className="text-sm leading-snug">{t.text}</span>
+          <button
+            onClick={() => remove(t.id)}
+            aria-label="Cerrar notificación"
+            className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-black/5 dark:hover:bg-white/10"
+          >
+            <XIcon />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+
+  return { push, view } as const;
+}
+
+/* ===================== Componentes base ===================== */
 function Section({
   title,
   subtitle,
@@ -81,12 +168,14 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="mb-5">
+    <section className="mb-6">
       {/* Grid: en lg dividimos en [títulos | acciones]; en móviles se apila */}
       <div className="mb-3 grid gap-1 lg:grid-cols-[1fr_auto] lg:items-end">
         <div>
           <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
-          {subtitle && <p className="text-sm text-slate-500 dark:text-slate-300">{subtitle}</p>}
+          {subtitle && (
+            <p className="text-sm text-slate-500 dark:text-slate-300">{subtitle}</p>
+          )}
         </div>
         {/* Limite de ancho para evitar que “empuje” */}
         {actions && <div className="w-full lg:w-auto max-w-[720px]">{actions}</div>}
@@ -100,7 +189,10 @@ function SkeletonRows({ rows = 6 }: { rows?: number }) {
   return (
     <tbody>
       {Array.from({ length: rows }).map((_, i) => (
-        <tr key={i} className="border-b border-slate-100 dark:border-white/10 animate-pulse">
+        <tr
+          key={i}
+          className="border-b border-slate-100 dark:border-white/10 animate-pulse"
+        >
           <td className={`${shell.td}`} colSpan={6}>
             <div className="h-6 rounded bg-slate-100 dark:bg-white/10" />
           </td>
@@ -111,9 +203,11 @@ function SkeletonRows({ rows = 6 }: { rows?: number }) {
 }
 
 /* ===================== Formularios ===================== */
-function FormulariosPanel() {
+function FormulariosPanel({ toast }: { toast: ReturnType<typeof useToasts>["push"] }) {
   const router = useRouter();
-  const [rows, setRows] = useState<{ id: string; title: string; version: string; questions: number }[]>([]);
+  const [rows, setRows] = useState<
+    { id: string; title: string; version: string; questions: number }[]
+  >([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -121,7 +215,7 @@ function FormulariosPanel() {
 
   const fileRef = useRef<HTMLInputElement>(null);
 
-  async function load() {
+  const load = useCallback(async () => {
     try {
       setErr(null);
       setLoading(true);
@@ -132,8 +226,11 @@ function FormulariosPanel() {
     } finally {
       setLoading(false);
     }
-  }
-  useEffect(() => { load(); }, []);
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   async function newQuestionnaire() {
     try {
@@ -144,42 +241,67 @@ function FormulariosPanel() {
         timezone: "America/Bogota",
         questions: [],
       });
-      const newId = String((created as any)?.id ?? (created as AdminQuestionnaire)?.id ?? "");
+      const newId = String(
+        (created as any)?.id ?? (created as AdminQuestionnaire)?.id ?? ""
+      );
       if (!newId) throw new Error("El backend no devolvió un ID para el nuevo cuestionario.");
+      toast("ok", "Cuestionario creado");
       router.push(`/admin/${newId}`);
     } catch (e: any) {
-      alert(e?.message || "No se pudo crear el cuestionario");
+      toast("err", e?.message || "No se pudo crear el cuestionario");
     } finally {
       setLoading(false);
     }
   }
+
   async function onDuplicate(id: string) {
-    const v = prompt("Nueva versión (opcional):") || undefined;
-    const res = await duplicateQuestionnaire(id, v);
-    router.push(`/admin/${res.id}`);
+    try {
+      const v = prompt("Nueva versión (opcional):") || undefined;
+      const res = await duplicateQuestionnaire(id, v);
+      toast("ok", "Cuestionario duplicado");
+      router.push(`/admin/${res.id}`);
+    } catch (e: any) {
+      toast("err", e?.message || "No se pudo duplicar");
+    }
   }
+
   async function onDelete(id: string) {
-    if (!confirm("¿Eliminar definitivamente este cuestionario?")) return;
-    await deleteQuestionnaire(id);
-    load();
+    try {
+      if (!confirm("¿Eliminar definitivamente este cuestionario?")) return;
+      await deleteQuestionnaire(id);
+      toast("ok", "Eliminado correctamente");
+      load();
+    } catch (e: any) {
+      toast("err", e?.message || "No se pudo eliminar");
+    }
   }
+
   async function onExport(id: string) {
     try {
       const q = await getQuestionnaire(id);
-      const blob = new Blob([JSON.stringify(q, null, 2)], { type: "application/json" });
+      const blob = new Blob([JSON.stringify(q, null, 2)], {
+        type: "application/json",
+      });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${q.title.replace(/[^\w\-]+/g, "_")}_${q.version}.json`;
+      a.download = `${String(q.title || "cuestionario")
+        .replace(/[^\w\-]+/g, "_")}_${q.version || "v1"}.json`;
       a.click();
       URL.revokeObjectURL(url);
+      toast("ok", "Exportado");
     } catch (e: any) {
-      alert(e?.message || "No se pudo exportar");
+      toast("err", e?.message || "No se pudo exportar");
     }
   }
-  function triggerImport() { fileRef.current?.click(); }
+
+  function triggerImport() {
+    fileRef.current?.click();
+  }
+
   async function onImportFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]; e.target.value = "";
+    const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
     try {
       const parsed = JSON.parse(await file.text()) as AdminQuestionnaire;
@@ -187,10 +309,10 @@ function FormulariosPanel() {
         throw new Error("JSON inválido (requiere id, title, version, questions[])");
       }
       const saved = await upsertQuestionnaire(parsed);
-      alert("Cuestionario importado");
+      toast("ok", "Cuestionario importado");
       router.push(`/admin/${saved.id}`);
     } catch (e: any) {
-      alert(e?.message || "No se pudo importar");
+      toast("err", e?.message || "No se pudo importar");
     }
   }
 
@@ -198,7 +320,11 @@ function FormulariosPanel() {
     const q = debounced.trim().toLowerCase();
     return !q
       ? rows
-      : rows.filter((r) => r.title.toLowerCase().includes(q) || r.version.toLowerCase().includes(q));
+      : rows.filter(
+          (r) =>
+            r.title.toLowerCase().includes(q) ||
+            r.version.toLowerCase().includes(q)
+        );
   }, [rows, debounced]);
 
   return (
@@ -206,22 +332,36 @@ function FormulariosPanel() {
       title="Formularios"
       subtitle="Crea, edita, duplica e importa/exporta cuestionarios."
       actions={
-  <div className="grid w-full grid-cols-2 md:grid-cols-5 gap-2">
-    <div className="relative col-span-2 md:col-span-3">
-      <SearchIcon />
-      <input
-        className={shell.input + " pl-9"}
-        placeholder="Buscar por título/versión…"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        aria-label="Buscar cuestionarios"
-      />
-    </div>
-    <button onClick={triggerImport} className={shell.btn + " col-span-1"}>Importar</button>
-    <button onClick={newQuestionnaire} className={shell.btnPrimary + " col-span-1"}>Nuevo</button>
-    <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={onImportFile} />
-  </div>
-}
+        <div className="grid w-full grid-cols-2 md:grid-cols-5 gap-2">
+          <div className="relative col-span-2 md:col-span-3">
+            <SearchIcon />
+            <input
+              className={shell.input + " pl-9"}
+              placeholder="Buscar por título/versión…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              aria-label="Buscar cuestionarios"
+            />
+            {/* hint */}
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 hidden md:block">
+              <span className={shell.kbd}>/</span>
+            </div>
+          </div>
+          <button onClick={triggerImport} className={shell.btn + " col-span-1"}>
+            Importar
+          </button>
+          <button onClick={newQuestionnaire} className={shell.btnPrimary + " col-span-1"}>
+            Nuevo
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={onImportFile}
+          />
+        </div>
+      }
     >
       <div className={`${shell.card} divide-y divide-slate-100 dark:divide-white/10`}>
         <div className="p-4">
@@ -232,15 +372,23 @@ function FormulariosPanel() {
           )}
 
           {loading ? (
-            <ul className="grid gap-3">{Array.from({ length: 4 }).map((_, i) => (
-              <li key={i} className="p-5 rounded-xl border border-slate-100 dark:border-white/10 bg-slate-50/60 dark:bg-white/5 animate-pulse h-[84px]" />
-            ))}</ul>
+            <ul className="grid gap-3">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <li
+                  key={i}
+                  className="p-5 rounded-xl border border-slate-100 dark:border-white/10 bg-slate-50/60 dark:bg-white/5 animate-pulse h-[84px]"
+                />
+              ))}
+            </ul>
           ) : filtered.length === 0 ? (
             <div className="text-sm text-slate-500 py-6">No hay cuestionarios.</div>
           ) : (
             <ul className="grid gap-3">
               {filtered.map((r) => (
-                <li key={r.id} className="p-5 rounded-xl border border-slate-100 dark:border-white/10 bg-white dark:bg-slate-900 flex items-center justify-between">
+                <li
+                  key={r.id}
+                  className="p-5 rounded-xl border border-slate-100 dark:border-white/10 bg-white dark:bg-slate-900 flex items-center justify-between"
+                >
                   <div className="min-w-0">
                     <div className="text-base font-medium truncate">
                       {r.title} <span className="text-slate-500">({r.version})</span>
@@ -250,10 +398,22 @@ function FormulariosPanel() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <Link href={`/admin/${r.id}`} className={shell.btn}>Editar</Link>
-                    <button onClick={() => onExport(r.id)} className={shell.btn}>Exportar</button>
-                    <button onClick={() => onDuplicate(r.id)} className={shell.btn}>Duplicar</button>
-                    <button onClick={() => onDelete(r.id)} className={`${shell.btn} hover:bg-rose-50`}>Eliminar</button>
+                    <Link href={`/admin/${r.id}`} className={shell.btn} title="Editar cuestionario">
+                      Editar
+                    </Link>
+                    <button onClick={() => onExport(r.id)} className={shell.btn} title="Exportar JSON">
+                      Exportar
+                    </button>
+                    <button onClick={() => onDuplicate(r.id)} className={shell.btn} title="Duplicar">
+                      Duplicar
+                    </button>
+                    <button
+                      onClick={() => onDelete(r.id)}
+                      className={`${shell.btn} hover:bg-rose-50`}
+                      title="Eliminar"
+                    >
+                      Eliminar
+                    </button>
                   </div>
                 </li>
               ))}
@@ -266,7 +426,7 @@ function FormulariosPanel() {
 }
 
 /* ===================== Actores (paginación) ===================== */
-function ActoresPanel() {
+function ActoresPanel({ toast }: { toast: ReturnType<typeof useToasts>["push"] }) {
   const [query, setQuery] = useState("");
   const debouncedQ = useDebounced(query, 350);
   const [tipo, setTipo] = useState<ActorTipo | "">("");
@@ -284,8 +444,23 @@ function ActoresPanel() {
   // control de carrera
   const reqId = useRef(0);
 
+  // Atajo: "/" para enfocar búsqueda
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.key === "/" || e.key === "k") && (e.ctrlKey || !e.metaKey) && document.activeElement?.tagName !== "INPUT") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // reset a primera página al cambiar filtros
-  useEffect(() => { setPage(1); }, [debouncedQ, tipo, pageSize]);
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedQ, tipo, pageSize]);
 
   useEffect(() => {
     let cancelled = false;
@@ -302,8 +477,11 @@ function ActoresPanel() {
           page_size: pageSize,
         });
 
-        // server-side paging
-        const serverPaged = !!res.next || !!res.prev || (typeof res.count === "number" && res.count !== res.results.length);
+        // Server-side paging? Si el backend devuelve next/prev o count
+        const serverPaged =
+          !!(res as any).next ||
+          !!(res as any).prev ||
+          (typeof res.count === "number" && res.count !== res.results.length);
 
         let rows: AdminActor[] = [];
         let total = 0;
@@ -330,7 +508,9 @@ function ActoresPanel() {
       }
     })();
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [debouncedQ, tipo, page, pageSize]);
 
   const totalPages = Math.max(1, Math.ceil(count / pageSize));
@@ -338,20 +518,35 @@ function ActoresPanel() {
   const to = Math.min(count, page * pageSize);
 
   async function onDelete(id: string) {
-    if (!confirm("¿Eliminar actor?")) return;
-    await adminDeleteActor(id);
-    setPage((p) => p); // recarga con los mismos filtros
+    try {
+      if (!confirm("¿Eliminar actor?")) return;
+      await adminDeleteActor(id);
+      toast("ok", "Actor eliminado");
+      setPage((p) => p); // recarga con los mismos filtros
+    } catch (e: any) {
+      toast("err", e?.message || "No se pudo eliminar");
+    }
   }
   async function onEditSubmit(actor: AdminActor | Partial<AdminActor>) {
     if (!actor.id) return;
-    await adminUpdateActor(actor.id, actor as AdminActor);
-    setEditing(null);
-    setPage((p) => p);
+    try {
+      await adminUpdateActor(actor.id, actor as AdminActor);
+      toast("ok", "Actor actualizado");
+      setEditing(null);
+      setPage((p) => p);
+    } catch (e: any) {
+      toast("err", e?.message || "No se pudo actualizar");
+    }
   }
   async function onCreateSubmit(actor: Partial<AdminActor>) {
-    await adminCreateActor(actor as any);
-    setCreating(false);
-    setPage(1);
+    try {
+      await adminCreateActor(actor as any);
+      toast("ok", "Actor creado");
+      setCreating(false);
+      setPage(1);
+    } catch (e: any) {
+      toast("err", e?.message || "No se pudo crear");
+    }
   }
 
   return (
@@ -359,55 +554,84 @@ function ActoresPanel() {
       title="Actores"
       subtitle="Gestiona el catálogo de actores. Usa búsqueda y filtros para acotar resultados."
       actions={
-  <div className="grid w-full grid-cols-2 md:grid-cols-6 gap-2">
-    {/* Buscador: ocupa 2 cols en móvil, 3 en md */}
-    <div className="relative col-span-2 md:col-span-3">
-      <SearchIcon />
-      <input
-        className={shell.input + " pl-9"}
-        placeholder="Buscar por nombre/documento…"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        aria-label="Buscar actores"
-      />
-    </div>
-    {/* Filtro tipo: 1 col móvil, 2 en md */}
-    <select
-      className={`${shell.select} col-span-1 md:col-span-2`}
-      value={tipo}
-      onChange={(e) => setTipo((e.target.value || "") as ActorTipo | "")}
-      aria-label="Filtrar por tipo"
-    >
-      <option value="">Todos los tipos</option>
-      <option value="PROVEEDOR">Proveedor</option>
-      <option value="TRANSPORTISTA">Transportista</option>
-      <option value="RECEPTOR">Receptor</option>
-    </select>
-    {/* Page size: 1 col */}
-    <select
-      className={`${shell.select} col-span-1 md:col-span-1`}
-      value={pageSize}
-      onChange={(e) => setPageSize(Number(e.target.value))}
-      aria-label="Elementos por página"
-    >
-      {[10, 25, 50, 100].map((n) => (
-        <option key={n} value={n}>{n} / página</option>
-      ))}
-    </select>
-    {/* Botón: 2 cols en móvil (full), 1 en md */}
-    <button onClick={() => setCreating(true)} className={shell.btnPrimary + " col-span-2 md:col-span-1"}>
-      Nuevo
-    </button>
-  </div>
-}
+        <div className="grid w-full grid-cols-2 md:grid-cols-6 gap-2">
+          {/* Buscador: ocupa 2 cols en móvil, 3 en md */}
+          <div className="relative col-span-2 md:col-span-3">
+            <SearchIcon />
+            <input
+              ref={searchRef}
+              className={shell.input + " pl-9"}
+              placeholder="Buscar por nombre/documento…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              aria-label="Buscar actores"
+            />
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 hidden md:block">
+              <span className={shell.kbd}>Ctrl</span>
+              <span className="mx-0.5">+</span>
+              <span className={shell.kbd}>/</span>
+            </div>
+          </div>
+          {/* Filtro tipo: 1 col móvil, 2 en md */}
+          <select
+            className={`${shell.select} col-span-1 md:col-span-2`}
+            value={tipo}
+            onChange={(e) => setTipo((e.target.value || "") as ActorTipo | "")}
+            aria-label="Filtrar por tipo"
+          >
+            <option value="">Todos los tipos</option>
+            <option value="PROVEEDOR">Proveedor</option>
+            <option value="TRANSPORTISTA">Transportista</option>
+            <option value="RECEPTOR">Receptor</option>
+          </select>
+          {/* Page size: 1 col */}
+          <select
+            className={`${shell.select} col-span-1 md:col-span-1`}
+            value={pageSize}
+            onChange={(e) => setPageSize(Number(e.target.value))}
+            aria-label="Elementos por página"
+          >
+            {[10, 25, 50, 100].map((n) => (
+              <option key={n} value={n}>
+                {n} / página
+              </option>
+            ))}
+          </select>
+          {/* Botón: 2 cols en móvil (full), 1 en md */}
+          <button
+            onClick={() => setCreating(true)}
+            className={shell.btnPrimary + " col-span-2 md:col-span-1"}
+          >
+            Nuevo
+          </button>
+        </div>
+      }
     >
       <div className={`${shell.card} overflow-hidden`}>
         {/* Toolbar de paginación */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 py-3 border-b border-slate-100 dark:border-white/10">
-          <div className="text-sm text-slate-600 dark:text-slate-300">{loading ? "Cargando…" : `${from}–${to} de ${count}`}</div>
+          <div className="text-sm text-slate-600 dark:text-slate-300">
+            {loading ? "Cargando…" : `${from}–${to} de ${count}`}
+          </div>
           <div className="flex items-center gap-2">
-            <button className={shell.iconBtn} disabled={page <= 1 || loading} onClick={() => setPage(1)} title="Primera">«</button>
-            <button className={shell.iconBtn} disabled={page <= 1 || loading} onClick={() => setPage((p) => Math.max(1, p - 1))} title="Anterior">‹</button>
+            <button
+              className={shell.iconBtn}
+              disabled={page <= 1 || loading}
+              onClick={() => setPage(1)}
+              title="Primera"
+              aria-label="Primera página"
+            >
+              «
+            </button>
+            <button
+              className={shell.iconBtn}
+              disabled={page <= 1 || loading}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              title="Anterior"
+              aria-label="Página anterior"
+            >
+              ‹
+            </button>
             <div className="flex items-center gap-2">
               <input
                 className={`${shell.input} w-[74px] text-center`}
@@ -423,8 +647,24 @@ function ActoresPanel() {
               />
               <span className="text-sm text-slate-500 dark:text-slate-300">/ {totalPages}</span>
             </div>
-            <button className={shell.iconBtn} disabled={page >= totalPages || loading} onClick={() => setPage((p) => Math.min(totalPages, p + 1))} title="Siguiente">›</button>
-            <button className={shell.iconBtn} disabled={page >= totalPages || loading} onClick={() => setPage(totalPages)} title="Última">»</button>
+            <button
+              className={shell.iconBtn}
+              disabled={page >= totalPages || loading}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              title="Siguiente"
+              aria-label="Página siguiente"
+            >
+              ›
+            </button>
+            <button
+              className={shell.iconBtn}
+              disabled={page >= totalPages || loading}
+              onClick={() => setPage(totalPages)}
+              title="Última"
+              aria-label="Última página"
+            >
+              »
+            </button>
           </div>
         </div>
 
@@ -443,23 +683,45 @@ function ActoresPanel() {
             {loading ? (
               <SkeletonRows rows={8} />
             ) : display.length === 0 ? (
-              <tbody><tr><td colSpan={5} className={`${shell.td} text-center text-slate-500`}>No hay actores.</td></tr></tbody>
+              <tbody>
+                <tr>
+                  <td colSpan={5} className={`${shell.td} text-center text-slate-500`}>
+                    No hay actores.
+                  </td>
+                </tr>
+              </tbody>
             ) : (
               <tbody>
                 {display.map((a) => (
-                  <tr key={a.id} className="border-b last:border-0 border-slate-100 dark:border-white/10">
+                  <tr
+                    key={a.id}
+                    className="border-b last:border-0 border-slate-100 dark:border-white/10"
+                  >
                     <td className={shell.td}>{a.nombre}</td>
                     <td className={shell.td}>{a.tipo}</td>
                     <td className={shell.td}>{a.documento || "—"}</td>
                     <td className={shell.td}>
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs ${a.activo ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200" : "bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200"}`}>
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs ${
+                          a.activo
+                            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200"
+                            : "bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200"
+                        }`}
+                      >
                         {a.activo ? "Activo" : "Inactivo"}
                       </span>
                     </td>
                     <td className={shell.td}>
                       <div className="flex gap-2">
-                        <button onClick={() => setEditing(a)} className={shell.btn}>Editar</button>
-                        <button onClick={() => onDelete(a.id)} className={`${shell.btn} hover:bg-rose-50`}>Eliminar</button>
+                        <button onClick={() => setEditing(a)} className={shell.btn}>
+                          Editar
+                        </button>
+                        <button
+                          onClick={() => onDelete(a.id)}
+                          className={`${shell.btn} hover:bg-rose-50`}
+                        >
+                          Eliminar
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -471,8 +733,20 @@ function ActoresPanel() {
       </div>
 
       {/* Modales */}
-      {editing && <ActorModal actor={editing} onClose={() => setEditing(null)} onSubmit={onEditSubmit} />}
-      {creating && <ActorModal actor={{ id: "", nombre: "", tipo: "PROVEEDOR", activo: true }} onClose={() => setCreating(false)} onSubmit={onCreateSubmit} />}
+      {editing && (
+        <ActorModal
+          actor={editing}
+          onClose={() => setEditing(null)}
+          onSubmit={onEditSubmit}
+        />
+      )}
+      {creating && (
+        <ActorModal
+          actor={{ id: "", nombre: "", tipo: "PROVEEDOR", activo: true }}
+          onClose={() => setCreating(false)}
+          onSubmit={onCreateSubmit}
+        />
+      )}
     </Section>
   );
 }
@@ -487,25 +761,51 @@ function ActorModal({
   onSubmit: (actor: AdminActor | Partial<AdminActor>) => void;
 }) {
   const [nombre, setNombre] = useState(actor.nombre ?? "");
-  const [tipo, setTipo] = useState<ActorTipo>(actor.tipo as ActorTipo || "PROVEEDOR");
+  const [tipo, setTipo] = useState<ActorTipo>((actor.tipo as ActorTipo) || "PROVEEDOR");
   const [documento, setDocumento] = useState(actor.documento ?? "");
   const [activo, setActivo] = useState(actor.activo ?? true);
 
+  // Cerrar con ESC
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
-    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50">
+    <div
+      className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50"
+      role="dialog"
+      aria-modal="true"
+      aria-label={actor.id ? "Editar actor" : "Nuevo actor"}
+    >
       <div className="w-[380px] max-w-[92vw] p-7 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-white/10 shadow-2xl">
-        <h3 className="text-lg font-semibold mb-4">{actor.id ? "Editar actor" : "Nuevo actor"}</h3>
+        <h3 className="text-lg font-semibold mb-4">
+          {actor.id ? "Editar actor" : "Nuevo actor"}
+        </h3>
         <form
-          onSubmit={(e) => { e.preventDefault(); onSubmit({ ...actor, nombre, tipo, documento, activo }); }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSubmit({ ...actor, nombre, tipo, documento, activo });
+          }}
           className="space-y-4"
         >
           <label className="block">
             <span className="text-sm">Nombre</span>
-            <input className={shell.input} value={nombre} onChange={(e) => setNombre(e.target.value)} required />
+            <input
+              className={shell.input}
+              value={nombre}
+              onChange={(e) => setNombre(e.target.value)}
+              required
+            />
           </label>
           <label className="block">
             <span className="text-sm">Tipo</span>
-            <select className={shell.select} value={tipo} onChange={(e) => setTipo(e.target.value as ActorTipo)}>
+            <select
+              className={shell.select}
+              value={tipo}
+              onChange={(e) => setTipo(e.target.value as ActorTipo)}
+            >
               <option value="PROVEEDOR">Proveedor</option>
               <option value="TRANSPORTISTA">Transportista</option>
               <option value="RECEPTOR">Receptor</option>
@@ -513,15 +813,27 @@ function ActorModal({
           </label>
           <label className="block">
             <span className="text-sm">Documento</span>
-            <input className={shell.input} value={documento} onChange={(e) => setDocumento(e.target.value)} />
+            <input
+              className={shell.input}
+              value={documento}
+              onChange={(e) => setDocumento(e.target.value)}
+            />
           </label>
           <label className="inline-flex items-center gap-2">
-            <input type="checkbox" checked={!!activo} onChange={() => setActivo((a) => !a)} />
+            <input
+              type="checkbox"
+              checked={!!activo}
+              onChange={() => setActivo((a) => !a)}
+            />
             <span className="text-sm">Activo</span>
           </label>
           <div className="flex gap-2 justify-end pt-2">
-            <button type="button" className={shell.btn} onClick={onClose}>Cancelar</button>
-            <button type="submit" className={shell.btnPrimary}>Guardar</button>
+            <button type="button" className={shell.btn} onClick={onClose}>
+              Cancelar
+            </button>
+            <button type="submit" className={shell.btnPrimary}>
+              Guardar
+            </button>
           </div>
         </form>
       </div>
@@ -530,24 +842,61 @@ function ActorModal({
 }
 
 /* ===================== Usuarios ===================== */
-function UsuariosPanel() {
+function UsuariosPanel({ toast }: { toast: ReturnType<typeof useToasts>["push"] }) {
   const [users, setUsers] = useState<AdminUser[] | null>(null);
   const [editing, setEditing] = useState<AdminUser | null>(null);
   const [creating, setCreating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true); setErr(null);
-    try { setUsers(await listAdminUsers()); }
-    catch (e: any) { setErr(e?.message || "Error cargando usuarios"); }
-    finally { setLoading(false); }
-  }
-  useEffect(() => { load(); }, []);
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      setUsers(await listAdminUsers());
+    } catch (e: any) {
+      setErr(e?.message || "Error cargando usuarios");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  async function onDelete(id: number) { if (confirm("¿Eliminar usuario?")) { await deleteAdminUser(id); load(); } }
-  async function onEditSubmit(u: AdminUser | Partial<AdminUser>) { if (!u.username) return; await upsertAdminUser(u as AdminUser); setEditing(null); load(); }
-  async function onCreateSubmit(u: Partial<AdminUser>) { await upsertAdminUser(u as AdminUser); setCreating(false); load(); }
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function onDelete(id: number) {
+    try {
+      if (confirm("¿Eliminar usuario?")) {
+        await deleteAdminUser(id);
+        toast("ok", "Usuario eliminado");
+        load();
+      }
+    } catch (e: any) {
+      toast("err", e?.message || "No se pudo eliminar");
+    }
+  }
+  async function onEditSubmit(u: AdminUser | Partial<AdminUser>) {
+    try {
+      if (!u.username) return;
+      await upsertAdminUser(u as AdminUser);
+      toast("ok", "Usuario actualizado");
+      setEditing(null);
+      load();
+    } catch (e: any) {
+      toast("err", e?.message || "No se pudo actualizar");
+    }
+  }
+  async function onCreateSubmit(u: Partial<AdminUser>) {
+    try {
+      await upsertAdminUser(u as AdminUser);
+      toast("ok", "Usuario creado");
+      setCreating(false);
+      load();
+    } catch (e: any) {
+      toast("err", e?.message || "No se pudo crear");
+    }
+  }
 
   const rows = users || [];
 
@@ -555,7 +904,11 @@ function UsuariosPanel() {
     <Section
       title="Usuarios"
       subtitle="Crea y gestiona usuarios de administración."
-      actions={<button onClick={() => setCreating(true)} className={shell.btnPrimary}>Nuevo</button>}
+      actions={
+        <button onClick={() => setCreating(true)} className={shell.btnPrimary}>
+          Nuevo
+        </button>
+      }
     >
       <div className={`${shell.card} overflow-hidden`}>
         <div className="overflow-auto">
@@ -572,21 +925,43 @@ function UsuariosPanel() {
             {loading ? (
               <SkeletonRows rows={6} />
             ) : err ? (
-              <tbody><tr><td colSpan={5} className={`${shell.td} text-center text-rose-600`}>{err}</td></tr></tbody>
+              <tbody>
+                <tr>
+                  <td colSpan={5} className={`${shell.td} text-center text-rose-600`}>
+                    {err}
+                  </td>
+                </tr>
+              </tbody>
             ) : rows.length === 0 ? (
-              <tbody><tr><td colSpan={5} className={`${shell.td} text-center text-slate-500`}>No hay usuarios.</td></tr></tbody>
+              <tbody>
+                <tr>
+                  <td colSpan={5} className={`${shell.td} text-center text-slate-500`}>
+                    No hay usuarios.
+                  </td>
+                </tr>
+              </tbody>
             ) : (
               <tbody>
                 {rows.map((u) => (
-                  <tr key={u.id} className="border-b last:border-0 border-slate-100 dark:border-white/10">
+                  <tr
+                    key={u.id}
+                    className="border-b last:border-0 border-slate-100 dark:border-white/10"
+                  >
                     <td className={shell.td}>{u.username}</td>
                     <td className={shell.td}>{u.email || "—"}</td>
                     <td className={shell.td}>{u.is_staff ? "Sí" : "No"}</td>
                     <td className={shell.td}>{u.is_active ? "Sí" : "No"}</td>
                     <td className={shell.td}>
                       <div className="flex gap-2">
-                        <button onClick={() => setEditing(u)} className={shell.btn}>Editar</button>
-                        <button onClick={() => onDelete(u.id!)} className={`${shell.btn} hover:bg-rose-50`}>Eliminar</button>
+                        <button onClick={() => setEditing(u)} className={shell.btn}>
+                          Editar
+                        </button>
+                        <button
+                          onClick={() => onDelete(u.id!)}
+                          className={`${shell.btn} hover:bg-rose-50`}
+                        >
+                          Eliminar
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -597,15 +972,41 @@ function UsuariosPanel() {
         </div>
       </div>
 
-      {editing && <UserModal user={editing} onClose={() => setEditing(null)} onSubmit={onEditSubmit} />}
-      {creating && <UserModal user={{ id: undefined, username: "", email: "", is_staff: false, is_superuser: false, is_active: true, password: "" }} onClose={() => setCreating(false)} onSubmit={onCreateSubmit} />}
+      {editing && (
+        <UserModal
+          user={editing}
+          onClose={() => setEditing(null)}
+          onSubmit={onEditSubmit}
+        />
+      )}
+      {creating && (
+        <UserModal
+          user={{
+            id: undefined,
+            username: "",
+            email: "",
+            is_staff: false,
+            is_superuser: false,
+            is_active: true,
+            password: "",
+          }}
+          onClose={() => setCreating(false)}
+          onSubmit={onCreateSubmit}
+        />
+      )}
     </Section>
   );
 }
 
 function UserModal({
-  user, onClose, onSubmit,
-}: { user: Partial<AdminUser>; onClose: () => void; onSubmit: (user: AdminUser | Partial<AdminUser>) => void; }) {
+  user,
+  onClose,
+  onSubmit,
+}: {
+  user: Partial<AdminUser>;
+  onClose: () => void;
+  onSubmit: (user: AdminUser | Partial<AdminUser>) => void;
+}) {
   const [username, setUsername] = useState(user.username ?? "");
   const [email, setEmail] = useState(user.email ?? "");
   const [is_staff, setStaff] = useState(user.is_staff ?? false);
@@ -613,43 +1014,101 @@ function UserModal({
   const [is_active, setActive] = useState(user.is_active ?? true);
   const [password, setPassword] = useState(user.password ?? "");
 
+  // ESC para cerrar
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
-    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50">
+    <div
+      className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50"
+      role="dialog"
+      aria-modal="true"
+      aria-label={user.id ? "Editar usuario" : "Nuevo usuario"}
+    >
       <div className="w-[380px] max-w-[92vw] p-7 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-white/10 shadow-2xl">
-        <h3 className="text-lg font-semibold mb-4">{user.id ? "Editar usuario" : "Nuevo usuario"}</h3>
+        <h3 className="text-lg font-semibold mb-4">
+          {user.id ? "Editar usuario" : "Nuevo usuario"}
+        </h3>
         <form
-          onSubmit={(e) => { e.preventDefault(); onSubmit({ ...user, username, email, is_staff, is_superuser, is_active, password }); }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSubmit({
+              ...user,
+              username,
+              email,
+              is_staff,
+              is_superuser,
+              is_active,
+              password,
+            });
+          }}
           className="space-y-4"
         >
           <label className="block">
             <span className="text-sm">Usuario</span>
-            <input className={shell.input} value={username} onChange={(e) => setUsername(e.target.value)} required />
+            <input
+              className={shell.input}
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+            />
           </label>
           <label className="block">
             <span className="text-sm">Email</span>
-            <input className={shell.input} type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <input
+              className={shell.input}
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
           </label>
           <div className="flex items-center gap-4 flex-wrap">
             <label className="inline-flex items-center gap-2">
-              <input type="checkbox" checked={!!is_staff} onChange={() => setStaff((v) => !v)} />
+              <input
+                type="checkbox"
+                checked={!!is_staff}
+                onChange={() => setStaff((v) => !v)}
+              />
               <span className="text-sm">Staff</span>
             </label>
             <label className="inline-flex items-center gap-2">
-              <input type="checkbox" checked={!!is_superuser} onChange={() => setSuper((v) => !v)} />
+              <input
+                type="checkbox"
+                checked={!!is_superuser}
+                onChange={() => setSuper((v) => !v)}
+              />
               <span className="text-sm">Superuser</span>
             </label>
             <label className="inline-flex items-center gap-2">
-              <input type="checkbox" checked={!!is_active} onChange={() => setActive((v) => !v)} />
+              <input
+                type="checkbox"
+                checked={!!is_active}
+                onChange={() => setActive((v) => !v)}
+              />
               <span className="text-sm">Activo</span>
             </label>
           </div>
           <label className="block">
             <span className="text-sm">Contraseña</span>
-            <input className={shell.input} type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" placeholder={user.id ? "(Dejar vacío para no cambiar)" : ""} />
+            <input
+              className={shell.input}
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="new-password"
+              placeholder={user.id ? "(Dejar vacío para no cambiar)" : ""}
+            />
           </label>
           <div className="flex gap-2 justify-end pt-2">
-            <button type="button" className={shell.btn} onClick={onClose}>Cancelar</button>
-            <button type="submit" className={shell.btnPrimary}>Guardar</button>
+            <button type="button" className={shell.btn} onClick={onClose}>
+              Cancelar
+            </button>
+            <button type="submit" className={shell.btnPrimary}>
+              Guardar
+            </button>
           </div>
         </form>
       </div>
@@ -660,13 +1119,26 @@ function UserModal({
 /* ===================== Página principal ===================== */
 export default function AdminGeneralPage() {
   const router = useRouter();
-  const [tab, setTab] = useState<"formularios" | "actores" | "usuarios">("formularios");
+  const [tab, setTab] = useState<"formularios" | "actores" | "usuarios">(
+    (typeof window !== "undefined" && (localStorage.getItem("admin.tab") as any)) ||
+      "formularios"
+  );
 
+  const { push, view } = useToasts();
+
+  // Redirección si no hay token
   useEffect(() => {
     if (!isAuthenticated()) {
       router.replace(`/login?next=${encodeURIComponent("/admin")}`);
     }
   }, [router]);
+
+  // Persistir pestaña activa
+  useEffect(() => {
+    try {
+      localStorage.setItem("admin.tab", tab);
+    } catch {}
+  }, [tab]);
 
   function logout() {
     if (!confirm("¿Cerrar sesión?")) return;
@@ -680,22 +1152,50 @@ export default function AdminGeneralPage() {
         <div className="mb-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h1 className="text-3xl font-semibold tracking-tight">Administración</h1>
-            <p className="text-sm text-slate-500 dark:text-slate-300">Gestión de formularios, actores y usuarios.</p>
+            <p className="text-sm text-slate-500 dark:text-slate-300">
+              Gestión de formularios, actores y usuarios.
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <nav className={shell.pillTabs} role="tablist" aria-label="Secciones">
-              <button role="tab" aria-selected={tab === "formularios"} className={shell.pill(tab === "formularios")} onClick={() => setTab("formularios")}>Formularios</button>
-              <button role="tab" aria-selected={tab === "actores"} className={shell.pill(tab === "actores")} onClick={() => setTab("actores")}>Actores</button>
-              <button role="tab" aria-selected={tab === "usuarios"} className={shell.pill(tab === "usuarios")} onClick={() => setTab("usuarios")}>Usuarios</button>
+              <button
+                role="tab"
+                aria-selected={tab === "formularios"}
+                className={shell.pill(tab === "formularios")}
+                onClick={() => setTab("formularios")}
+              >
+                Formularios
+              </button>
+              <button
+                role="tab"
+                aria-selected={tab === "actores"}
+                className={shell.pill(tab === "actores")}
+                onClick={() => setTab("actores")}
+              >
+                Actores
+              </button>
+              <button
+                role="tab"
+                aria-selected={tab === "usuarios"}
+                className={shell.pill(tab === "usuarios")}
+                onClick={() => setTab("usuarios")}
+              >
+                Usuarios
+              </button>
             </nav>
-            <button onClick={logout} className={shell.btn} title="Cerrar sesión">Cerrar sesión</button>
+            <button onClick={logout} className={shell.btn} title="Cerrar sesión">
+              Cerrar sesión
+            </button>
           </div>
         </div>
 
-        {tab === "formularios" && <FormulariosPanel />}
-        {tab === "actores" && <ActoresPanel />}
-        {tab === "usuarios" && <UsuariosPanel />}
+        {tab === "formularios" && <FormulariosPanel toast={push} />}
+        {tab === "actores" && <ActoresPanel toast={push} />}
+        {tab === "usuarios" && <UsuariosPanel toast={push} />}
       </div>
+
+      {/* Render toasts */}
+      {view}
     </main>
   );
 }

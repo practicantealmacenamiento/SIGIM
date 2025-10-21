@@ -1,6 +1,7 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   fetchSubmissionDetail,
@@ -13,7 +14,7 @@ const BACKEND_ORIGIN = (process.env.NEXT_PUBLIC_BACKEND_ORIGIN || "").replace(/\
 
 function resolveAnswerFileUrl(a: any): string | null {
   // 1) tomar la "materia prima": path crudo > url del back
-  let raw: string | null = a?.answer_file_path || a?.answer_file || a?.file || null;
+  const raw: string | null = a?.answer_file_path || a?.answer_file || a?.file || null;
   if (!raw) return null;
 
   // 2) sacar un "resto" neutro SIN prefijos (ni api/, ni secure-media/, ni media/)
@@ -37,9 +38,7 @@ function resolveAnswerFileUrl(a: any): string | null {
       rest = rest.slice(iMedia + "media/".length);
     } else {
       // quitar prefijos "api/(v1/)?..." si los hubiera
-      rest = rest
-        .replace(/^api\/v\d+\//, "")
-        .replace(/^api\//, "");
+      rest = rest.replace(/^api\/v\d+\//, "").replace(/^api\//, "");
     }
   }
   rest = rest.replace(/^\/+/, "");
@@ -50,6 +49,17 @@ function resolveAnswerFileUrl(a: any): string | null {
   }
   return `/api/secure-media/${rest}`; // el proxy añadirá /v1/ una sola vez
 }
+
+/* ================== UI tokens ================== */
+const SHELL =
+  "min-h-[calc(100vh-80px)] bg-gradient-to-b from-slate-50 to-white dark:from-[#0b1220] dark:to-[#0b1220]";
+const WRAP = "mx-auto max-w-4xl px-6 md:px-8 py-10";
+const CARD =
+  "rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white/90 dark:bg-slate-900/90 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-white/60 supports-[backdrop-filter]:dark:bg-slate-900/60";
+const INPUT =
+  "w-full rounded-xl border border-slate-300 dark:border-white/15 bg-white dark:bg-slate-900 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300/40 dark:focus:ring-sky-600/40";
+const BTN =
+  "px-3 py-2 rounded-xl border border-slate-300 dark:border-white/15 hover:bg-slate-50 dark:hover:bg-white/5 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm";
 
 /* ================== Helpers de formato ================== */
 const tz = "America/Bogota";
@@ -62,25 +72,15 @@ const isImage = (url: string) => {
   const u = url?.split("?")[0].toLowerCase();
   return (
     !!u &&
-    [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"].some((ext) =>
-      u.endsWith(ext)
-    )
+    [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"].some((ext) => u.endsWith(ext))
   );
 };
 const qidOf = (a: AnswerDetail) =>
-  String(
-    (a as any).question_id ??
-      (a as any).questionId ??
-      (a as any).question?.id ??
-      ""
-  );
+  String((a as any).question_id ?? (a as any).questionId ?? (a as any).question?.id ?? "");
 
 /* ========== Index de preguntas (por si no vienen planas) ========== */
 const buildQuestionIndex = (detail: any) => {
-  const map = new Map<
-    string,
-    { text?: string | null; type?: string | null }
-  >();
+  const map = new Map<string, { text?: string | null; type?: string | null }>();
   const add = (arr?: any[]) => {
     if (!Array.isArray(arr)) return;
     for (const q of arr) {
@@ -107,10 +107,7 @@ const getQText = (a: AnswerDetail, idx: Map<string, any>) =>
   "(Pregunta eliminada)";
 
 const getQType = (a: AnswerDetail, idx: Map<string, any>) =>
-  (a as any).question_type ??
-  a?.question?.type ??
-  (qidOf(a) && idx.get(qidOf(a))?.type) ??
-  "";
+  (a as any).question_type ?? a?.question?.type ?? (qidOf(a) && idx.get(qidOf(a))?.type) ?? "";
 
 const hasAnswer = (a: AnswerDetail) =>
   Boolean(a.answer_text) ||
@@ -120,21 +117,20 @@ const hasAnswer = (a: AnswerDetail) =>
 /* ================== Skeleton ================== */
 function Skeleton() {
   return (
-    <main className="min-h-[60vh] px-6 md:px-8 py-10">
-      <div className="mx-auto max-w-4xl space-y-6">
-        <div className="h-7 w-64 bg-slate-200 dark:bg-white/10 rounded animate-pulse" />
-        <div className="h-4 w-96 bg-slate-200 dark:bg-white/10 rounded animate-pulse" />
-        <div className="h-[1px] bg-slate-200 dark:bg-white/10" />
-        <div className="space-y-3">
-          {[...Array(3)].map((_, i) => (
-            <div
-              key={i}
-              className="p-4 border rounded-xl border-slate-200 dark:border-white/10"
-            >
-              <div className="h-5 w-2/3 bg-slate-200 dark:bg-white/10 rounded animate-pulse" />
-              <div className="mt-2 h-4 w-1/2 bg-slate-200 dark:bg-white/10 rounded animate-pulse" />
-            </div>
-          ))}
+    <main className={SHELL}>
+      <div className={WRAP}>
+        <div className="space-y-6">
+          <div className="h-7 w-64 bg-slate-200 dark:bg-white/10 rounded animate-pulse" />
+          <div className="h-4 w-96 bg-slate-200 dark:bg-white/10 rounded animate-pulse" />
+          <div className="h-[1px] bg-slate-200 dark:bg-white/10" />
+          <div className="space-y-3">
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="p-4 border rounded-xl border-slate-200 dark:border-white/10">
+                <div className="h-5 w-2/3 bg-slate-200 dark:bg-white/10 rounded animate-pulse" />
+                <div className="mt-2 h-4 w-1/2 bg-slate-200 dark:bg-white/10 rounded animate-pulse" />
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </main>
@@ -154,24 +150,18 @@ export default function SubmissionDetailPage() {
 
   // filtros (sin etiquetas)
   const [q, setQ] = useState("");
-  const [typeFilter, setTypeFilter] = useState<
-    "all" | "text" | "number" | "date" | "file" | "choice"
-  >("all");
-  const [answeredFilter, setAnsweredFilter] = useState<
-    "all" | "answered" | "empty"
-  >("all");
-  const [sort, setSort] = useState<
-    "original" | "qaz" | "time_desc" | "time_asc"
-  >("original");
+  const [typeFilter, setTypeFilter] = useState<"all" | "text" | "number" | "date" | "file" | "choice">("all");
+  const [answeredFilter, setAnsweredFilter] = useState<"all" | "answered" | "empty">("all");
+  const [sort, setSort] = useState<"original" | "qaz" | "time_desc" | "time_asc">("original");
 
   // preview por Blob (para media protegida)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null); // Object URL
   const [previewOrig, setPreviewOrig] = useState<string | null>(null); // URL protegida original
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const modalOpenRef = useRef(false);
 
   async function openPreview(rawUrl: string) {
-    console.log("[preview-url]", rawUrl); // ← depuración
     try {
       setPreviewError(null);
       setPreviewLoading(true);
@@ -180,7 +170,10 @@ export default function SubmissionDetailPage() {
       if (!res.ok) throw new Error(`No se pudo cargar la imagen (${res.status})`);
       const blob = await res.blob();
       const obj = URL.createObjectURL(blob);
+      // liberar URL previa si existía
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
       setPreviewUrl(obj);
+      modalOpenRef.current = true;
     } catch (e: any) {
       setPreviewUrl(null);
       setPreviewError(e?.message || "No se pudo cargar la imagen");
@@ -194,7 +187,24 @@ export default function SubmissionDetailPage() {
     setPreviewOrig(null);
     setPreviewError(null);
     setPreviewLoading(false);
+    modalOpenRef.current = false;
   }
+
+  // Cerrar modal con Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && modalOpenRef.current) closePreview();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Cleanup object URL al desmontar
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
 
   useEffect(() => {
     if (!id) return;
@@ -228,17 +238,12 @@ export default function SubmissionDetailPage() {
       typeFilter === "all" ? true : (getQType(a, qIndex) as string) === typeFilter;
 
     const byAnswered = (a: AnswerDetail) =>
-      answeredFilter === "all"
-        ? true
-        : answeredFilter === "answered"
-        ? hasAnswer(a)
-        : !hasAnswer(a);
+      answeredFilter === "all" ? true : answeredFilter === "answered" ? hasAnswer(a) : !hasAnswer(a);
 
     const bySearch = (a: AnswerDetail) => {
       if (!needle) return true;
       const fileUrl = resolveAnswerFileUrl(a);
-      const blob =
-        `${getQText(a, qIndex) || ""} ${a.answer_choice?.text || ""} ${a.answer_text || ""} ${fileUrl}`;
+      const blob = `${getQText(a, qIndex) || ""} ${a.answer_choice?.text || ""} ${a.answer_text || ""} ${fileUrl}`;
       return norm(blob).includes(needle);
     };
 
@@ -252,11 +257,9 @@ export default function SubmissionDetailPage() {
             (getQText(a, qIndex) || "").localeCompare(getQText(b, qIndex) || "")
         : sort === "time_desc"
         ? (a: AnswerDetail, b: AnswerDetail) =>
-            Date.parse((b as any).timestamp || 0) -
-            Date.parse((a as any).timestamp || 0)
+            Date.parse((b as any).timestamp || 0) - Date.parse((a as any).timestamp || 0)
         : (a: AnswerDetail, b: AnswerDetail) =>
-            Date.parse((a as any).timestamp || 0) -
-            Date.parse((b as any).timestamp || 0);
+            Date.parse((a as any).timestamp || 0) - Date.parse((b as any).timestamp || 0);
 
     if (cmp) out.sort(cmp as any);
     return out;
@@ -265,27 +268,28 @@ export default function SubmissionDetailPage() {
   if (!id || loading) return <Skeleton />;
   if (err)
     return (
-      <main className="px-6 md:px-8 py-10">
-        <div className="max-w-3xl mx-auto text-red-600">{err}</div>
+      <main className={SHELL}>
+        <div className={WRAP}>
+          <div className={`${CARD} p-6 md:p-8 text-center text-rose-600`}>{err}</div>
+        </div>
       </main>
     );
   if (!detail) return null;
 
-  const placa = (detail as any)?.placa_vehiculo
-    ? String((detail as any).placa_vehiculo).toUpperCase()
-    : "SIN PLACA";
+  const placa = (detail as any)?.placa_vehiculo ? String((detail as any).placa_vehiculo).toUpperCase() : "SIN PLACA";
   const estado = (detail as any)?.finalizado ? "Finalizado" : "En progreso";
   const total = answers.length;
   const shown = filtered.length;
 
   return (
-    <main className="px-6 md:px-8 py-10">
-      <div className="mx-auto max-w-4xl">
-        {/* ENCABEZADO LIMPIO */}
+    <main className={SHELL}>
+      <div className={WRAP}>
+        {/* ENCABEZADO */}
         <div className="space-y-2">
           <button
             onClick={() => router.back()}
             className="text-sm text-slate-500 hover:text-slate-700 dark:text-white/60 dark:hover:text-white transition"
+            title="Volver"
           >
             ← Volver
           </button>
@@ -296,9 +300,7 @@ export default function SubmissionDetailPage() {
           <p className="text-sm text-slate-600 dark:text-white/70">
             Placa <span className="font-medium">{placa}</span> · {estado} · ID{" "}
             <span className="font-mono">{String((detail as any).id)}</span>
-            {(detail as any).fecha_cierre ? (
-              <> · Cierre {dt((detail as any).fecha_cierre)}</>
-            ) : null}
+            {(detail as any).fecha_cierre ? <> · Cierre {dt((detail as any).fecha_cierre)}</> : null}
           </p>
         </div>
 
@@ -306,54 +308,72 @@ export default function SubmissionDetailPage() {
 
         {/* FILTROS */}
         <section className="mt-6">
-          <div className="grid md:grid-cols-4 gap-3">
-            <div className="md:col-span-2">
-              <input
-                type="search"
-                placeholder="Buscar en preguntas y respuestas…"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                className="w-full rounded-lg border border-slate-300 dark:border-white/15 bg-white dark:bg-slate-900 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300/40"
-              />
-            </div>
-            <select
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value as any)}
-              className="rounded-lg border border-slate-300 dark:border-white/15 bg-white dark:bg-slate-900 px-3 py-2"
-            >
-              <option value="all">Tipo: todos</option>
-              <option value="text">Texto</option>
-              <option value="number">Número</option>
-              <option value="date">Fecha</option>
-              <option value="file">Archivo</option>
-              <option value="choice">Opción</option>
-            </select>
-            <select
-              value={answeredFilter}
-              onChange={(e) => setAnsweredFilter(e.target.value as any)}
-              className="rounded-lg border border-slate-300 dark:border-white/15 bg-white dark:bg-slate-900 px-3 py-2"
-            >
-              <option value="all">Respuestas: todas</option>
-              <option value="answered">Solo contestadas</option>
-              <option value="empty">Solo vacías</option>
-            </select>
-          </div>
-
-          <div className="mt-3 flex items-center justify-between text-sm text-slate-600 dark:text-white/70">
-            <div className="flex flex-wrap gap-3">
+          <div className={`${CARD} p-4`}>
+            <div className="grid md:grid-cols-4 gap-3">
+              <div className="md:col-span-2">
+                <label className="sr-only" htmlFor="searchQA">
+                  Buscar en preguntas y respuestas
+                </label>
+                <input
+                  id="searchQA"
+                  type="search"
+                  placeholder="Buscar en preguntas y respuestas…"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  className={INPUT}
+                />
+              </div>
+              <label className="sr-only" htmlFor="typeSel">
+                Tipo de pregunta
+              </label>
               <select
-                value={sort}
-                onChange={(e) => setSort(e.target.value as any)}
-                className="rounded-lg border border-slate-300 dark:border-white/15 bg-white dark:bg-slate-900 px-3 py-2"
+                id="typeSel"
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value as any)}
+                className={INPUT}
               >
-                <option value="original">Orden original</option>
-                <option value="qaz">Pregunta A–Z</option>
-                <option value="time_desc">Más recientes primero</option>
-                <option value="time_asc">Más antiguas primero</option>
+                <option value="all">Tipo: todos</option>
+                <option value="text">Texto</option>
+                <option value="number">Número</option>
+                <option value="date">Fecha</option>
+                <option value="file">Archivo</option>
+                <option value="choice">Opción</option>
+              </select>
+              <label className="sr-only" htmlFor="answeredSel">
+                Estado de respuesta
+              </label>
+              <select
+                id="answeredSel"
+                value={answeredFilter}
+                onChange={(e) => setAnsweredFilter(e.target.value as any)}
+                className={INPUT}
+              >
+                <option value="all">Respuestas: todas</option>
+                <option value="answered">Solo contestadas</option>
+                <option value="empty">Solo vacías</option>
               </select>
             </div>
-            <div>
-              Mostrando {shown} de {total}
+
+            <div className="mt-3 flex items-center justify-between text-sm text-slate-600 dark:text-white/70">
+              <div className="flex flex-wrap gap-3">
+                <label className="sr-only" htmlFor="sortSel">
+                  Ordenar
+                </label>
+                <select
+                  id="sortSel"
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value as any)}
+                  className={INPUT}
+                >
+                  <option value="original">Orden original</option>
+                  <option value="qaz">Pregunta A–Z</option>
+                  <option value="time_desc">Más recientes primero</option>
+                  <option value="time_asc">Más antiguas primero</option>
+                </select>
+              </div>
+              <div>
+                Mostrando {shown} de {total}
+              </div>
             </div>
           </div>
         </section>
@@ -361,9 +381,7 @@ export default function SubmissionDetailPage() {
         {/* LISTA DE RESPUESTAS */}
         <section className="mt-8 space-y-3">
           {filtered.length === 0 ? (
-            <div className="text-sm text-slate-600 dark:text-white/70">
-              (Sin resultados)
-            </div>
+            <div className={`${CARD} p-6 text-sm text-slate-600 dark:text-white/70`}>Sin resultados</div>
           ) : (
             filtered.map((a, idx) => {
               const qtext = getQText(a, qIndex);
@@ -373,13 +391,14 @@ export default function SubmissionDetailPage() {
               const rawMeta = (a as any)?.meta;
               const metaEntries =
                 rawMeta && typeof rawMeta === "object" && !Array.isArray(rawMeta)
+                  // eslint-disable-next-line @typescript-eslint/no-unused-vars
                   ? Object.entries(rawMeta).filter(([_, v]) => v !== null && v !== "" && v !== undefined)
                   : [];
 
               return (
                 <article
                   key={`${a.id || "ans"}-${idx}`}
-                  className="rounded-2xl border border-slate-200/80 dark:border-white/10 bg-white dark:bg-slate-900 shadow-sm"
+                  className={`${CARD} overflow-hidden`}
                 >
                   {/* Cabezal */}
                   <header className="px-4 md:px-5 pt-4 md:pt-5">
@@ -388,9 +407,7 @@ export default function SubmissionDetailPage() {
                     </h3>
                     <p className="mt-1 text-xs text-slate-500 dark:text-white/60">
                       {typ ? <>Tipo: {typ} · </> : null}
-                      {(a as any).timestamp ? (
-                        <>Enviado: {dt((a as any).timestamp)}</>
-                      ) : null}
+                      {(a as any).timestamp ? <>Enviado: {dt((a as any).timestamp)}</> : null}
                     </p>
                   </header>
 
@@ -401,9 +418,7 @@ export default function SubmissionDetailPage() {
                         {ans}
                       </div>
                     ) : (
-                      <div className="mt-3 text-sm text-slate-500 dark:text-white/60">
-                        (Sin respuesta)
-                      </div>
+                      <div className="mt-3 text-sm text-slate-500 dark:text-white/60">(Sin respuesta)</div>
                     )}
 
                     {metaEntries.length > 0 && (
@@ -427,20 +442,34 @@ export default function SubmissionDetailPage() {
                     )}
 
                     {fileUrl && (
-                      <div className="mt-3">
+                      <div className="mt-3 flex items-center gap-2">
                         {isImage(fileUrl) ? (
-                          <button
-                            className="px-3 py-2 rounded-lg border border-slate-300 dark:border-white/15 hover:bg-slate-50 dark:hover:bg-white/5 text-sm"
-                            onClick={() => openPreview(fileUrl)}
-                          >
-                            Ver imagen
-                          </button>
+                          <>
+                            <button
+                              className={BTN}
+                              onClick={() => openPreview(fileUrl)}
+                              title="Ver imagen"
+                              aria-haspopup="dialog"
+                            >
+                              Ver imagen
+                            </button>
+                            <a
+                              href={fileUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className={BTN}
+                              title="Abrir URL protegida (requiere sesión)"
+                            >
+                              Abrir protegida
+                            </a>
+                          </>
                         ) : (
                           <a
                             href={fileUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-300 dark:border-white/15 hover:bg-slate-50 dark:hover:bg-white/5 text-sm"
+                            className={BTN}
+                            title="Ver archivo"
                           >
                             Ver archivo
                           </a>
@@ -459,6 +488,9 @@ export default function SubmissionDetailPage() {
           <div
             className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
             onClick={closePreview}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Vista previa de la imagen"
           >
             <div
               className="bg-white dark:bg-slate-900 rounded-2xl overflow-hidden shadow-xl max-w-4xl w-full"
@@ -466,30 +498,17 @@ export default function SubmissionDetailPage() {
             >
               <div className="flex items-center justify-between px-4 py-2 border-b dark:border-white/10">
                 <div className="font-medium">Vista previa</div>
-                <button
-                  className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-white/15 hover:bg-slate-50 dark:hover:bg-white/5 text-sm"
-                  onClick={closePreview}
-                >
+                <button className={BTN} onClick={closePreview} title="Cerrar (Esc)">
                   Cerrar
                 </button>
               </div>
 
               <div className="p-2 min-h-[50vh] flex items-center justify-center">
-                {previewLoading && (
-                  <div className="text-sm text-slate-600 dark:text-white/70">
-                    Cargando imagen…
-                  </div>
-                )}
-                {previewError && (
-                  <div className="text-sm text-rose-600">{previewError}</div>
-                )}
+                {previewLoading && <div className="text-sm text-slate-600 dark:text-white/70">Cargando imagen…</div>}
+                {previewError && <div className="text-sm text-rose-600">{previewError}</div>}
                 {!previewLoading && !previewError && previewUrl && (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={previewUrl}
-                    alt="preview"
-                    className="max-h-[70vh] w-full object-contain rounded-xl"
-                  />
+                  <img src={previewUrl} alt="preview" className="max-h-[70vh] w-full object-contain rounded-xl" />
                 )}
               </div>
 
@@ -499,7 +518,8 @@ export default function SubmissionDetailPage() {
                     href={previewUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-300 dark:border-white/15 hover:bg-slate-50 dark:hover:bg-white/5 text-sm"
+                    className={BTN}
+                    title="Abrir imagen en pestaña"
                   >
                     Abrir en pestaña
                   </a>
@@ -509,7 +529,7 @@ export default function SubmissionDetailPage() {
                     href={previewOrig}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-300 dark:border-white/15 hover:bg-slate-50 dark:hover:bg-white/5 text-sm"
+                    className={BTN}
                     title="Abrir URL protegida directamente (requiere sesión)"
                   >
                     Abrir URL protegida

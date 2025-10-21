@@ -22,9 +22,7 @@ type HistItem = {
 const DEFAULT_API_PORT = 8000;
 const API_BASE =
   (typeof window !== "undefined" &&
-    (process.env.NEXT_PUBLIC_API_URL || "")
-      .toString()
-      .replace(/\/$/, "")) ||
+    (process.env.NEXT_PUBLIC_API_URL || "").toString().replace(/\/$/, "")) ||
   (typeof window !== "undefined"
     ? `${window.location.protocol}//${window.location.hostname}:${DEFAULT_API_PORT}`
     : `http://127.0.0.1:${DEFAULT_API_PORT}`);
@@ -44,12 +42,28 @@ async function fetchJSON<T = any>(url: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+function fmtDateTimeTz(iso?: string | null, tz = "America/Bogota") {
+  if (!iso) return "—";
+  try {
+    return new Intl.DateTimeFormat("es-CO", { timeZone: tz, dateStyle: "medium", timeStyle: "short" }).format(new Date(iso));
+  } catch {
+    return new Date(iso).toLocaleString();
+  }
+}
+
 async function fetchRecent(): Promise<HistItem[]> {
   // Usamos el mismo esquema que la app: base del backend + /api/v1/…
   const url = `${API_BASE}${API_V1}/historial/reguladores/?solo_completados=1`;
   try {
     const data = await fetchJSON<HistItem[]>(url);
-    return Array.isArray(data) ? data : [];
+    // Ordenamos por ultima fecha si el backend no lo hace
+    const arr = Array.isArray(data) ? data : [];
+    return arr
+      .slice()
+      .sort(
+        (a, b) =>
+          Date.parse(b.ultima_fecha_cierre || "0") - Date.parse(a.ultima_fecha_cierre || "0")
+      );
   } catch {
     return [];
   }
@@ -59,7 +73,11 @@ async function fetchRecent(): Promise<HistItem[]> {
 const CARD =
   "rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-slate-800 shadow-sm";
 const BTN =
-  "inline-flex items-center justify-center rounded-xl px-4 py-2.5 text-sm font-medium";
+  "inline-flex items-center justify-center rounded-xl px-4 py-2.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-sky-300/40 dark:focus:ring-sky-600/40";
+const BTN_PRIMARY =
+  `${BTN} bg-sky-600 hover:bg-sky-700 text-white shadow`;
+const BTN_SOFT =
+  `${BTN} border border-slate-200 dark:border-white/15 text-slate-700 dark:text-slate-100 hover:bg-slate-100/70 dark:hover:bg-white/5`;
 
 export default function Home() {
   const [authed, setAuthed] = useState<boolean | null>(null);
@@ -110,19 +128,11 @@ export default function Home() {
       setLoading(true);
       try {
         // listQuestionnaires ya soporta /management y cae a /cuestionarios
-        const [qs, last] = await Promise.all([
-          listQuestionnaires(),
-          fetchRecent(),
-        ]);
+        const [qs, last] = await Promise.all([listQuestionnaires(), fetchRecent()]);
         if (!mounted) return;
+
         // Para el home solo necesitamos id/title/version
-        setQus(
-          (qs || []).map((q) => ({
-            id: q.id,
-            title: q.title,
-            version: q.version,
-          }))
-        );
+        setQus((qs || []).map((q) => ({ id: q.id, title: q.title, version: q.version })));
         setHist((last || []).slice(0, 5));
         setErr(null);
       } catch (e: any) {
@@ -140,9 +150,9 @@ export default function Home() {
 
   const today = useMemo(() => {
     try {
-      return new Date().toLocaleDateString();
+      return new Intl.DateTimeFormat("es-CO", { dateStyle: "full" }).format(new Date());
     } catch {
-      return "";
+      return new Date().toLocaleDateString();
     }
   }, []);
 
@@ -153,7 +163,7 @@ export default function Home() {
         <div className={`${CARD} p-6 md:p-8`}>
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div>
-              <p className="text-sm text-slate-500 dark:text-slate-300">{today}</p>
+              <p className="text-sm text-slate-500 dark:text-slate-300" aria-live="polite">{today}</p>
               <h1 className="mt-1 text-2xl md:text-3xl font-semibold text-slate-900 dark:text-white">
                 Hola{username ? `, ${username}` : ""} 👋
               </h1>
@@ -162,23 +172,17 @@ export default function Home() {
               </p>
             </div>
 
-            <div className="flex gap-3">
-              <Link
-                href="/formulario"
-                className={`${BTN} bg-sky-600 hover:bg-sky-700 text-white shadow`}
-              >
+            <div className="flex flex-wrap gap-3">
+              <Link href="/formulario" className={BTN_PRIMARY}>
                 Nuevo registro
               </Link>
-              <Link
-                href="/historial"
-                className={`${BTN} border border-slate-200 dark:border-white/15 text-slate-700 dark:text-slate-100 hover:bg-slate-100/70 dark:hover:bg-white/5`}
-              >
+              <Link href="/historial" className={BTN_SOFT}>
                 Ver historial
               </Link>
               {isStaff && (
                 <Link
                   href="/admin"
-                  className={`${BTN} border border-amber-300/50 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 font-semibold`}
+                  className={`${BTN} border border-amber-300/50 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 font-semibold hover:bg-amber-100/80 dark:hover:bg-amber-900/30`}
                 >
                   Panel admin
                 </Link>
@@ -191,16 +195,13 @@ export default function Home() {
       <main className="mx-auto max-w-6xl px-6 pb-14">
         {/* Home ligero (no logueado) */}
         {authed === false && (
-          <section className={`mt-8 ${CARD} p-6`}>
+          <section className={`mt-8 ${CARD} p-6`} aria-live="polite">
             <h2 className="text-base font-semibold text-slate-900 dark:text-white">Bienvenido</h2>
             <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
               Inicia sesión para ver tus cuestionarios y movimientos recientes.
             </p>
             <div className="mt-4">
-              <Link
-                href="/login"
-                className={`${BTN} bg-sky-600 hover:bg-sky-700 text-white shadow`}
-              >
+              <Link href="/login" className={BTN_PRIMARY}>
                 Iniciar sesión
               </Link>
             </div>
@@ -211,7 +212,11 @@ export default function Home() {
         {authed === true && (
           <>
             {err && (
-              <div className="mt-6 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900/40 dark:bg-rose-950/40 dark:text-rose-200 p-4">
+              <div
+                className="mt-6 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900/40 dark:bg-rose-950/40 dark:text-rose-200 p-4"
+                role="status"
+                aria-live="polite"
+              >
                 No pudimos cargar algunos datos. Puedes seguir usando los atajos de arriba.
               </div>
             )}
@@ -247,7 +252,8 @@ export default function Home() {
                       <li key={q.id}>
                         <Link
                           href={`/formulario?questionnaire_id=${q.id}`}
-                          className="group flex items-center justify-between rounded-xl border border-slate-200 dark:border-white/10 px-4 py-3 hover:bg-slate-50 dark:hover:bg-white/5"
+                          className="group flex items-center justify-between rounded-xl border border-slate-200 dark:border-white/10 px-4 py-3 hover:bg-slate-50 dark:hover:bg-white/5 focus:outline-none focus:ring-2 focus:ring-sky-300/40 dark:focus:ring-sky-600/40"
+                          title={`Abrir ${q.title}`}
                         >
                           <div className="min-w-0">
                             <p className="font-medium text-slate-900 dark:text-white truncate">
@@ -257,7 +263,10 @@ export default function Home() {
                               v{q.version}
                             </p>
                           </div>
-                          <span className="text-sky-600 group-hover:translate-x-0.5 transition">
+                          <span
+                            className="text-sky-600 transition-transform group-hover:translate-x-0.5"
+                            aria-hidden="true"
+                          >
                             ➜
                           </span>
                         </Link>
@@ -308,9 +317,7 @@ export default function Home() {
                           </p>
                         </div>
                         <span className="text-xs text-slate-500 dark:text-slate-300">
-                          {h.ultima_fecha_cierre
-                            ? new Date(h.ultima_fecha_cierre).toLocaleString()
-                            : "-"}
+                          {fmtDateTimeTz(h.ultima_fecha_cierre)}
                         </span>
                       </li>
                     ))}
