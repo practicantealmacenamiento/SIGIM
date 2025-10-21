@@ -352,10 +352,14 @@ export default function QuestionCard({
       );
       setRows((prev) => {
         if (prev.some((p) => p.nombre.toLowerCase() === actor.nombre.toLowerCase())) return prev;
-        const next = [
-          ...prev,
-          { nombre: actor.nombre, estibas: null, orden_compra: "", recipientes: null, unidad: "" },
-        ];
+        const newRow: ProviderRow = {
+          nombre: actor.nombre,
+          estibas: null,
+          orden_compra: "",
+          recipientes: null,
+          unidad: "",
+        };
+        const next = [...prev, newRow];
         defer(() => setVal(idx, JSON.stringify(next)));
         return next;
       });

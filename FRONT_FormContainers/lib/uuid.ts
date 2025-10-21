@@ -1,6 +1,5 @@
 // lib/uuid.ts
-/* eslint-disable no-bitwise */
-
+ 
 // Generador UUID v4 tolerante a SSR y a entornos sin crypto.randomUUID
 export function genUUID(): string {
   // 1) randomUUID nativo si existe (browser moderno / Node reciente con webcrypto)
