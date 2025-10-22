@@ -235,6 +235,9 @@ MEDIA_ROOT = BASE_DIR / "media"
 DATA_UPLOAD_MAX_MEMORY_SIZE = 32 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 32 * 1024 * 1024
 
+# Tope mensual IA
+VISION_MAX_PER_MONTH = 1999
+
 # =============================================================================
 # DRF / OpenAPI (Swagger)
 # =============================================================================

@@ -18,6 +18,14 @@ from typing import Optional, Iterable, List, Dict, Any
 from app.domain.ports import TextExtractorPort, ExtractionMode, ExtractionResult
 from app.domain.exceptions import ExtractionError, InvalidImageError
 
+# ========================== NUEVO: imports cuota mensual ==========================
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from django.conf import settings
+from django.db import transaction
+from app.infrastructure.usage_limits import VisionMonthlyUsage
+# ================================================================================
+
 # ---------------------------------------------------------------------
 # Dependencia opcional a Google Vision.
 # Si falla el import, armamos unas clases "mock" compatibles.
@@ -67,6 +75,38 @@ except Exception:
     google_exceptions = type("MockExceptions", (), {"GoogleAPICallError": Exception})()
     service_account = None
     google = None
+
+
+# ========================== Helpers cuota mensual ==========================
+VISION_MAX_PER_MONTH = int(getattr(settings, "VISION_MAX_PER_MONTH", 1999))
+VISION_TZ = ZoneInfo(getattr(settings, "TIME_ZONE", "America/Bogota"))
+
+class MonthlyQuotaExceeded(Exception):
+    """Señala que se alcanzó el tope mensual de OCR."""
+    pass
+
+def _now_bogota() -> datetime:
+    return datetime.now(tz=VISION_TZ)
+
+def _enforce_monthly_quota_db() -> None:
+    """
+    Aumenta el contador del mes actual (zona Bogotá) de forma atómica
+    y lanza MonthlyQuotaExceeded si supera VISION_MAX_PER_MONTH.
+    """
+    now = _now_bogota()
+    y, m = now.year, now.month
+    with transaction.atomic():
+        row, _ = (
+            VisionMonthlyUsage.objects.select_for_update()
+            .get_or_create(year=y, month=m, defaults={"count": 0})
+        )
+        if row.count >= VISION_MAX_PER_MONTH:
+            raise MonthlyQuotaExceeded(
+                f"Límite mensual de OCR alcanzado ({VISION_MAX_PER_MONTH})."
+            )
+        row.count += 1
+        row.save(update_fields=["count", "updated_at"])
+# ================================================================================
 
 
 class GoogleVisionAdapter(TextExtractorPort):
@@ -122,7 +162,14 @@ class GoogleVisionAdapter(TextExtractorPort):
                 image_size=len(image_bytes) if image_bytes else 0,
             )
         try:
+            _enforce_monthly_quota_db()   # <-- NUEVO: tope mensual
             return self._extract_text_internal(image_bytes, self.mode)
+        except MonthlyQuotaExceeded as e:  # <-- NUEVO: mapeo a ExtractionError
+            raise ExtractionError(
+                message=str(e),
+                service_name="GoogleVision",
+                error_code="MONTHLY_QUOTA_EXCEEDED",
+            )
         except (ExtractionError, InvalidImageError):
             raise
         except Exception as e:
@@ -145,8 +192,15 @@ class GoogleVisionAdapter(TextExtractorPort):
                 image_size=len(image_bytes) if image_bytes else 0,
             )
         try:
+            _enforce_monthly_quota_db()   # <-- NUEVO
             mode_str = self._map_extraction_mode(mode)
             return self._extract_text_internal(image_bytes, mode_str)
+        except MonthlyQuotaExceeded as e:  # <-- NUEVO
+            raise ExtractionError(
+                message=str(e),
+                service_name="GoogleVision",
+                error_code="MONTHLY_QUOTA_EXCEEDED",
+            )
         except (ExtractionError, InvalidImageError):
             raise
         except Exception as e:
@@ -170,6 +224,7 @@ class GoogleVisionAdapter(TextExtractorPort):
                 image_size=len(image_bytes) if image_bytes else 0,
             )
         try:
+            _enforce_monthly_quota_db()   # <-- NUEVO
             mode_str = self._map_extraction_mode(mode)
             hints = language_hints or self.language_hints
 
@@ -208,6 +263,12 @@ class GoogleVisionAdapter(TextExtractorPort):
                 bounding_boxes=bounding_boxes,
                 metadata={"mode": mode_str, "language_hints": hints},
             )
+        except MonthlyQuotaExceeded as e:  # <-- NUEVO
+            raise ExtractionError(
+                message=str(e),
+                service_name="GoogleVision",
+                error_code="MONTHLY_QUOTA_EXCEEDED",
+            )
         except (ExtractionError, InvalidImageError):
             raise
         except Exception as e:
@@ -237,6 +298,7 @@ class GoogleVisionAdapter(TextExtractorPort):
                 image_size=len(image_bytes) if image_bytes else 0,
             )
         try:
+            _enforce_monthly_quota_db()
             hints = language_hints or self.language_hints
             image = vision.Image(content=image_bytes)
             kwargs = {"image_context": {"language_hints": hints}} if hints else {}
@@ -281,6 +343,12 @@ class GoogleVisionAdapter(TextExtractorPort):
                     result["pages"].append(page_data)
 
             return result
+        except MonthlyQuotaExceeded as e:
+            raise ExtractionError(
+                message=str(e),
+                service_name="GoogleVision",
+                error_code="MONTHLY_QUOTA_EXCEEDED",
+            )
         except (ExtractionError, InvalidImageError):
             raise
         except Exception as e:
