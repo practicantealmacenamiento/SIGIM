@@ -361,6 +361,7 @@ class DjangoSubmissionRepository(SubmissionRepository):
         tipo_fase: str,
         regulador_id: Optional[UUID] = None,
         placa_vehiculo: Optional[str] = None,
+        created_by=None,
     ) -> DSubmission:
         """
         Crea una nueva submission y asegura la coherencia de `regulador_id`.
@@ -370,6 +371,7 @@ class DjangoSubmissionRepository(SubmissionRepository):
             tipo_fase=tipo_fase,
             regulador_id=regulador_id,
             placa_vehiculo=placa_vehiculo,
+            created_by=created_by,
         )
         self.ensure_regulador_on_create(obj)
         return self._model_to_entity(obj)
@@ -393,7 +395,20 @@ class DjangoSubmissionRepository(SubmissionRepository):
 
     # ---- Consultas para vistas de API ----
 
-    def list_for_api(self, params):
+    def _apply_user_scope(self, qs, *, user=None, include_all: bool = False):
+        """
+        Restringe el queryset al propietario (created_by) salvo que se indique lo contrario.
+
+        Args:
+            qs: QuerySet de SubmissionModel.
+            user: Usuario solicitante.
+            include_all: Si es True, no aplica restricción (usado para staff/admin).
+        """
+        if include_all or user is None:
+            return qs
+        return qs.filter(created_by=user)
+
+    def list_for_api(self, params, *, user=None, include_all: bool = False):
         """
         Retorna queryset de submissions con relaciones y filtros aplicables
         (pensado para vistas de listado). No evalúa el queryset.
@@ -404,6 +419,7 @@ class DjangoSubmissionRepository(SubmissionRepository):
             .order_by("-fecha_creacion")
             .prefetch_related("answers")
         )
+        qs = self._apply_user_scope(qs, user=user, include_all=include_all)
         p = params
 
         if not p.get("incluir_borradores"):
@@ -464,7 +480,7 @@ class DjangoSubmissionRepository(SubmissionRepository):
 
     # ---- Detalle con relaciones (para serialización completa) ----
 
-    def detail_queryset(self):
+    def detail_queryset(self, *, user=None, include_all: bool = False):
         """
         Retorna un queryset de submissions con respuestas + preguntas + choice prefetch-eados.
         """
@@ -473,29 +489,30 @@ class DjangoSubmissionRepository(SubmissionRepository):
             .select_related("question", "answer_choice")
             .order_by("timestamp")
         )
-        return (
+        base_qs = (
             SubmissionModel.objects
             .select_related("questionnaire", "proveedor", "transportista", "receptor")
             .prefetch_related(Prefetch("answers", queryset=answers_qs))
         )
+        return self._apply_user_scope(base_qs, user=user, include_all=include_all)
 
-    def get_detail(self, id: UUID) -> Optional[DSubmission]:
+    def get_detail(self, id: UUID, *, user=None, include_all: bool = False) -> Optional[DSubmission]:
         """
         Obtiene una submission con relaciones precargadas y la mapea a dominio.
         """
-        model = self.detail_queryset().filter(id=id).first()
+        model = self.detail_queryset(user=user, include_all=include_all).filter(id=id).first()
         return self._model_to_entity(model) if model else None
 
-    def get_for_api(self, id: UUID):
+    def get_for_api(self, id: UUID, *, user=None, include_all: bool = False):
         """
         Devuelve el modelo Django de Submission con relaciones y respuestas
         prefetch-eadas para serialización en la API (sin mapear a dominio).
         """
-        return self.detail_queryset().filter(id=id).first()
+        return self.detail_queryset(user=user, include_all=include_all).filter(id=id).first()
 
     # ---- Agregación de historial ----
 
-    def history_aggregate(self, *, fecha_desde=None, fecha_hasta=None):
+    def history_aggregate(self, *, fecha_desde=None, fecha_hasta=None, user=None, include_all: bool = False):
         """
         Agrega por `regulador_id` las últimas fases (F1/F2) y la última fecha de cierre.
 
@@ -505,34 +522,43 @@ class DjangoSubmissionRepository(SubmissionRepository):
             }
         """
         base = SubmissionModel.objects.filter(regulador_id__isnull=False, finalizado=True)
+        base = self._apply_user_scope(base, user=user, include_all=include_all)
 
         if fecha_desde:
             base = base.filter(fecha_cierre__date__gte=fecha_desde)
         if fecha_hasta:
             base = base.filter(fecha_cierre__date__lte=fecha_hasta)
 
+        scoped_submissions = lambda qs: self._apply_user_scope(qs, user=user, include_all=include_all)
+
         last_f1 = (
-            SubmissionModel.objects.filter(
-                regulador_id=OuterRef("regulador_id"),
-                finalizado=True,
-                tipo_fase="entrada",
+            scoped_submissions(
+                SubmissionModel.objects.filter(
+                    regulador_id=OuterRef("regulador_id"),
+                    finalizado=True,
+                    tipo_fase="entrada",
+                )
             )
             .order_by("-fecha_cierre", "-fecha_creacion")
             .values("id")[:1]
         )
         last_f2 = (
-            SubmissionModel.objects.filter(
-                regulador_id=OuterRef("regulador_id"),
-                finalizado=True,
-                tipo_fase="salida",
+            scoped_submissions(
+                SubmissionModel.objects.filter(
+                    regulador_id=OuterRef("regulador_id"),
+                    finalizado=True,
+                    tipo_fase="salida",
+                )
             )
             .order_by("-fecha_cierre", "-fecha_creacion")
             .values("id")[:1]
         )
         last_date = (
-            SubmissionModel.objects.filter(
-                regulador_id=OuterRef("regulador_id"),
-                finalizado=True,
+            scoped_submissions(
+                SubmissionModel.objects.filter(
+                    regulador_id=OuterRef("regulador_id"),
+                    finalizado=True,
+                )
             )
             .order_by("-fecha_cierre", "-fecha_creacion")
             .values("fecha_cierre")[:1]
@@ -549,7 +575,7 @@ class DjangoSubmissionRepository(SubmissionRepository):
             .order_by("-ultima_fecha_cierre")
         )
 
-    def get_by_ids(self, ids):
+    def get_by_ids(self, ids, *, user=None, include_all: bool = False):
         """
         Retorna un dict {str(id): SubmissionModel} para los ids solicitados
         (con relaciones select_related relevantes).
@@ -558,6 +584,7 @@ class DjangoSubmissionRepository(SubmissionRepository):
             SubmissionModel.objects.filter(id__in=ids)
             .select_related("questionnaire", "proveedor", "transportista", "receptor")
         )
+        qs = self._apply_user_scope(qs, user=user, include_all=include_all)
         return {str(s.id): s for s in qs}
 
     # ---- Mapeos entidad/modelo ----

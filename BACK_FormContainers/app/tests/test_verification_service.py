@@ -18,9 +18,10 @@ from app.domain.ports import TextExtractorPort
 from app.domain.repositories import QuestionRepository
 from app.domain.entities import Question
 from app.domain.exceptions import (
+    BusinessRuleViolationError,
     InvalidImageError,
     ExtractionError,
-    EntityNotFoundError
+    EntityNotFoundError,
 )
 
 
@@ -263,8 +264,25 @@ class TestVerificationService(unittest.TestCase):
         # Act & Assert
         with self.assertRaises(InvalidImageError) as context:
             self.service.verify_with_question(question_id, mock_image_file)
-        
+
         self.assertIn("Imagen vacía", str(context.exception))
+
+    def test_verify_with_question_requires_semantic_tag(self):
+        """Debe rechazar verificación cuando la pregunta no tiene semantic_tag permitido."""
+        question_id = uuid4()
+        mock_image_file = Mock()
+        mock_image_file.seek = Mock()
+        mock_image_file.read.return_value = b"fake_image_data"
+
+        mock_question = Mock()
+        mock_question.semantic_tag = None  # Sin tag configurado
+        self.mock_question_repo.get.return_value = mock_question
+
+        with patch("app.domain.rules.canonical_semantic_tag", return_value="none"):
+            with self.assertRaises(BusinessRuleViolationError) as ctx:
+                self.service.verify_with_question(question_id, mock_image_file)
+
+        self.assertIn("semantic_tag", ctx.exception.message)
 
     def test_verificar_universal_placa_tag(self):
         """Debe usar verificación de placa para semantic_tag 'placa'."""

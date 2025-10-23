@@ -323,7 +323,15 @@ class HistoryService:
         self.answer_repo = answer_repo
         self.question_repo = question_repo
 
-    def list_history(self, *, fecha_desde=None, fecha_hasta=None, solo_completados: bool = False) -> List[Dict]:
+    def list_history(
+        self,
+        *,
+        fecha_desde=None,
+        fecha_hasta=None,
+        solo_completados: bool = False,
+        user=None,
+        include_all: bool = False,
+    ) -> List[Dict]:
         """
         Retorna una lista de ítems de historial. Cada ítem contiene:
           - regulador_id
@@ -332,10 +340,19 @@ class HistoryService:
           - ultima_fecha_cierre
           - fase1 / fase2 (objetos submission)
         """
-        rows = self.submission_repo.history_aggregate(fecha_desde=fecha_desde, fecha_hasta=fecha_hasta)
+        rows = self.submission_repo.history_aggregate(
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta,
+            user=user,
+            include_all=include_all,
+        )
         f1_ids = [row["fase1_id"] for row in rows if row["fase1_id"]]
         f2_ids = [row["fase2_id"] for row in rows if row["fase2_id"]]
-        sub_map = self.submission_repo.get_by_ids(f1_ids + f2_ids)
+        sub_map = self.submission_repo.get_by_ids(
+            f1_ids + f2_ids,
+            user=user,
+            include_all=include_all,
+        )
 
         items: List[Dict] = []
         for row in rows:

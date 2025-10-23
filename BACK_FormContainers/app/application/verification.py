@@ -28,6 +28,7 @@ from typing import Dict, Any, Optional
 from app.domain import rules  # canonical_semantic_tag + reglas
 from app.domain.ports import TextExtractorPort
 from app.domain.exceptions import (
+    BusinessRuleViolationError,
     EntityNotFoundError,
     ExtractionError,
     InvalidImageError,
@@ -125,9 +126,16 @@ class VerificationService:
 
         # Preparar datos de imagen y enrutar por semantic_tag
         imagen_bytes = self._prepare_image_data(image_file)
-        tag = getattr(question, "semantic_tag", "") or "none"
-        result = self.verificar_universal(tag, imagen_bytes)
-        result["semantic_tag"] = tag
+        tag_raw = getattr(question, "semantic_tag", "") or "none"
+        canon_tag = rules.canonical_semantic_tag(tag_raw)
+        if canon_tag == "none":
+            raise BusinessRuleViolationError(
+                message="La pregunta no tiene semantic_tag habilitado para OCR.",
+                rule_name="semantic_tag_required",
+            )
+
+        result = self.verificar_universal(canon_tag, imagen_bytes)
+        result["semantic_tag"] = canon_tag
         return result
 
     def verificar_universal(self, tag: str, imagen_bytes: bytes) -> Dict[str, Any]:

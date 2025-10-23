@@ -310,6 +310,11 @@ class PrimeraPreguntaAPIView(APIView):
         cmd = SaveAndAdvanceCommand(**cmd_kwargs)
 
         try:
+            repo = DjangoSubmissionRepository()
+            can_view_all = bool(getattr(request.user, "is_staff", False))
+            if not repo.get_for_api(cmd.submission_id, user=request.user, include_all=can_view_all):
+                return Response({"error": "Submission no encontrada."}, status=404)
+
             svc: QuestionnaireService = self._get_questionnaire_service()
             result = svc.save_and_advance(cmd)
             return Response(SaveAndAdvanceResponseSerializer(result).data)
@@ -460,6 +465,7 @@ class SubmissionViewSet(mixins.ListModelMixin,
             tipo_fase=data["tipo_fase"],
             regulador_id=data.get("regulador_id"),
             placa_vehiculo=data.get("placa_vehiculo"),
+            created_by=request.user if getattr(request.user, "is_authenticated", False) else None,
         )
         return Response(
             SubmissionModelSerializer(created, context={"request": request}).data,
@@ -482,7 +488,12 @@ class SubmissionViewSet(mixins.ListModelMixin,
     def list(self, request):
         try:
             repo = DjangoSubmissionRepository()
-            qs = repo.list_for_api(request.query_params)
+            can_view_all = bool(getattr(request.user, "is_staff", False))
+            qs = repo.list_for_api(
+                request.query_params,
+                user=request.user,
+                include_all=can_view_all,
+            )
 
             paginator = self.pagination_class()
             page = paginator.paginate_queryset(qs, request)
@@ -503,7 +514,8 @@ class SubmissionViewSet(mixins.ListModelMixin,
     def retrieve(self, request, pk=None):
         try:
             repo = DjangoSubmissionRepository()
-            obj = repo.get_for_api(pk)
+            can_view_all = bool(getattr(request.user, "is_staff", False))
+            obj = repo.get_for_api(pk, user=request.user, include_all=can_view_all)
             if not obj:
                 return Response({"error": "Submission no encontrada."}, status=404)
             return Response(SubmissionModelSerializer(obj, context={"request": request}).data)
@@ -520,6 +532,11 @@ class SubmissionViewSet(mixins.ListModelMixin,
     @action(detail=True, methods=["post"], url_path="finalize")
     def finalize(self, request, pk=None):
         try:
+            repo = DjangoSubmissionRepository()
+            can_view_all = bool(getattr(request.user, "is_staff", False))
+            if not repo.get_for_api(pk, user=request.user, include_all=can_view_all):
+                return Response({"error": "Submission no encontrada."}, status=404)
+
             svc = get_service_factory().create_submission_service()
             updates = svc.finalize_submission(UUID(str(pk)))
             return Response({
@@ -542,7 +559,12 @@ class SubmissionViewSet(mixins.ListModelMixin,
     def enriched_detail(self, request, pk=None):
         try:
             repo = DjangoSubmissionRepository()
-            submission_model = repo.detail_queryset().filter(id=pk).first()
+            can_view_all = bool(getattr(request.user, "is_staff", False))
+            submission_model = (
+                repo.detail_queryset(user=request.user, include_all=can_view_all)
+                .filter(id=pk)
+                .first()
+            )
             if not submission_model:
                 return Response({'error': 'Submission no encontrada.'}, status=404)
             return Response({
@@ -588,6 +610,8 @@ class HistorialReguladoresAPIView(APIView):
                 fecha_desde=fecha_desde,
                 fecha_hasta=fecha_hasta,
                 solo_completados=solo_completados,
+                user=request.user,
+                include_all=bool(getattr(request.user, "is_staff", False)),
             )
 
             # 4) Paginación + serialización manual

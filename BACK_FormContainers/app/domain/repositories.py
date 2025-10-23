@@ -221,7 +221,7 @@ class SubmissionRepository(Protocol):
         ...
 
     # Opcionales empleados por interfaces (list/detail/history)
-    def list_for_api(self, params):
+    def list_for_api(self, params, *, user=None, include_all: bool = False):
         """Query/listado adaptable para vistas de API (filtros/paginación desde params)."""
         ...
 
@@ -229,18 +229,18 @@ class SubmissionRepository(Protocol):
         """Hook para asegurar consistencia de `regulador` al crear (si aplica)."""
         ...
 
-    def detail_queryset(self):
+    def detail_queryset(self, *, user=None, include_all: bool = False):
         """Devuelve un queryset/base de detalle optimizado (select_related/prefetch)."""
         ...
 
-    def get_detail(self, id: UUID):
+    def get_detail(self, id: UUID, *, user=None, include_all: bool = False):
         """Obtiene el detalle de un submission (proyección enriquecida)."""
         ...
 
-    def history_aggregate(self, *, fecha_desde=None, fecha_hasta=None):
+    def history_aggregate(self, *, fecha_desde=None, fecha_hasta=None, user=None, include_all: bool = False):
         """Agregaciones para módulo de historial (rango de fechas opcional)."""
         ...
 
-    def get_by_ids(self, ids):
+    def get_by_ids(self, ids, *, user=None, include_all: bool = False):
         """Obtiene múltiples submissions por sus identificadores (para listados/exports)."""
         ...
