@@ -574,7 +574,7 @@ function HistorialContent() {
           </div>
 
           {/* Filtros */}
-          <div className={`${CARD} mt-3 p-3 md:p-4`}>
+          <div className={`${CARD} relative z-30 mt-3 p-3 md:p-4`}>
             <div className="grid md:grid-cols-4 gap-3">
               <div className="md:col-span-2">
                 <div className="relative">
@@ -616,7 +616,10 @@ function HistorialContent() {
                   {desde || hasta ? `: ${fmtShortDate(desde)} – ${fmtShortDate(hasta)}` : ""}
                 </button>
                 {dateOpen && (
-                  <div id="date-popover" className={`${CARD} absolute z-20 mt-2 w-[320px] p-3`}>
+                  <div
+                    id="date-popover"
+                    className="absolute z-40 mt-2 w-[320px] p-3 rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-slate-900 shadow-xl ring-1 ring-slate-200/70 dark:ring-white/10"
+                  >
                     <div className="flex items-center gap-2">
                       <label className="sr-only" htmlFor="desde">
                         Desde
@@ -728,7 +731,10 @@ function HistorialContent() {
                 </div>
 
                 {actorPopoverOpen && actorTipo !== "todos" && !actorSel && (
-                  <div id="actor-popover" className={`${CARD} absolute z-20 mt-2 w-[360px] p-2`}>
+                  <div
+                    id="actor-popover"
+                    className="absolute z-40 mt-2 w-[360px] p-2 rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-slate-900 shadow-xl ring-1 ring-slate-200/70 dark:ring-white/10"
+                  >
                     {actorLoading && <div className="px-3 py-2 text-sm text-slate-500">Buscando…</div>}
                     {!actorLoading && actorOpts.length === 0 && actorInput.trim() && (
                       <div className="px-3 py-2 text-sm text-slate-500">Sin resultados</div>
@@ -782,7 +788,10 @@ function HistorialContent() {
                     ⋯
                   </button>
                   {menuOpen && (
-                    <div id="more-menu" className={`${CARD} absolute right-0 mt-2 w-56 p-2 z-20`}>
+                    <div
+                      id="more-menu"
+                      className="absolute right-0 mt-2 w-56 p-2 z-50 rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-slate-900 shadow-xl ring-1 ring-slate-200/70 dark:ring-white/10"
+                    >
                       <button
                         className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-white/5"
                         onClick={exportCSVAll}
