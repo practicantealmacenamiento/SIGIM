@@ -18,7 +18,6 @@ import {
   getQuestionnaire,
   upsertQuestionnaire,
   reorderQuestions,
-  installGlobalAuthFetch,
   type AdminQuestionnaire,
   type AdminQuestion,
   type AdminChoice,
@@ -135,10 +134,6 @@ export default function AdminEditorPage() {
   const [note, setNote] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const firstErrorRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    installGlobalAuthFetch();
-  }, []);
 
   // load + draft
   useEffect(() => {

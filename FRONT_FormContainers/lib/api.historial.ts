@@ -1,5 +1,4 @@
-const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "/api")
-  .replace(/\/+$/, ""); // sin barra final
+import { apiFetch } from "@/lib/http";
 
 export type UUID = string;
 
@@ -36,122 +35,31 @@ export type HistorialItem = {
   regulador_id: UUID | null;
   placa_vehiculo: string | null;
   contenedor?: string | null;
-  ultima_fecha_cierre: string | null; // ISO
+  ultima_fecha_cierre: string | null;
   fase1: SubmissionLite | null;
   fase2: SubmissionLite | null;
 };
 
-/* --------------------------- Utilidades fetch ---------------------------- */
-
-function readCookie(name: string): string | null {
-  if (typeof document === "undefined") return null;
-  const value = `; ${document.cookie}`;
-  const parts = value.split(`; ${name}=`);
-  if (parts.length === 2)
-    return decodeURIComponent(parts.pop()!.split(";").shift() || "");
-  return null;
-}
-
-function getAuthToken(): string | null {
-  // Preferimos la clave de admin; caemos a la histórica
-  if (typeof localStorage !== "undefined") {
-    const a = localStorage.getItem("auth:access_token");
-    if (a) return a;
-    const b = localStorage.getItem("auth_token");
-    if (b) return b;
-  }
-  return readCookie("auth_token");
-}
-
-function hdr(method: string, extra?: HeadersInit) {
-  const h = new Headers(extra || {});
-  if (!h.has("Accept")) h.set("Accept", "application/json");
-  const tok = getAuthToken();
-  if (tok && !h.has("Authorization")) h.set("Authorization", `Bearer ${tok}`);
-  return { method, credentials: "include" as const, headers: h };
-}
-
-function pickErrorMessage(data: any): string | null {
-  if (!data) return null;
-  if (typeof data === "string") return data;
-  const first = (...xs: any[]) =>
-    xs.find((v) => typeof v === "string" && v.trim());
-  const direct = first(data.detail, data.error, data.message, data.mensaje);
-  if (direct) return direct;
-
-  if (Array.isArray(data.non_field_errors) && data.non_field_errors[0])
-    return String(data.non_field_errors[0]);
-  if (Array.isArray(data.answer) && data.answer[0])
-    return String(data.answer[0]);
-
-  for (const k of Object.keys(data)) {
-    const v = data[k];
-    if (typeof v === "string" && v.trim()) return v;
-    if (Array.isArray(v) && typeof v[0] === "string" && v[0].trim())
-      return v[0];
-  }
-  return null;
-}
-
-async function fetchWithTimeout(
-  input: RequestInfo | URL,
-  init: RequestInit & { timeoutMs?: number } = {}
-) {
-  const { timeoutMs = 25000, ...rest } = init;
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), timeoutMs);
-  try {
-    return await fetch(input, { ...rest, signal: ac.signal });
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-async function parseOrThrow<T>(res: Response, fallback: string): Promise<T> {
-  if (res.ok) {
-    const ct = res.headers.get("Content-Type") || "";
-    if (ct.includes("application/json")) return res.json();
-    const txt = await res.text().catch(() => "");
-    return (txt ? (JSON.parse(txt) as T) : (null as any)) as T;
-  }
-  const txt = await res.text().catch(() => "");
-  try {
-    const j = txt ? JSON.parse(txt) : null;
-    const msg = pickErrorMessage(j) || res.statusText || fallback;
-    throw new Error(msg);
-  } catch {
-    throw new Error(txt || res.statusText || fallback);
-  }
-}
-
 /* ------------------------------ Endpoints ------------------------------- */
+
 export async function fetchHistorial(params: {
   fecha_desde?: string;
   fecha_hasta?: string;
-  solo_completados?: boolean; // por defecto true
+  solo_completados?: boolean;
 }): Promise<HistorialItem[]> {
-  const url = new URL(
-    `${API_BASE}/historial/reguladores/`,
-    typeof window !== "undefined"
-      ? window.location.origin
-      : "http://localhost"
-  );
-  if (params.fecha_desde) url.searchParams.set("fecha_desde", params.fecha_desde);
-  if (params.fecha_hasta) url.searchParams.set("fecha_hasta", params.fecha_hasta);
-  if (params.solo_completados !== false)
-    url.searchParams.set("solo_completados", "1");
+  const query = new URLSearchParams();
+  if (params.fecha_desde) query.set("fecha_desde", params.fecha_desde);
+  if (params.fecha_hasta) query.set("fecha_hasta", params.fecha_hasta);
+  if (params.solo_completados !== false) query.set("solo_completados", "1");
 
-  const res = await fetchWithTimeout(url.toString(), hdr("GET"));
-  const data = await parseOrThrow<any>(res, "No se pudo cargar el historial");
+  const qs = query.toString();
+  const endpoint = `historial/reguladores/${qs ? `?${qs}` : ""}`;
 
-  // ✅ Soporta ambos formatos: array directo o paginado { results, count }
+  const data = await apiFetch<any>(endpoint, { timeoutMs: 25000 });
   const list = Array.isArray(data) ? data : data?.results ?? [];
-
-  // 🔒 Dedupe temprano por si el backend trae repetidos
   return dedupeHistorialItems(list as HistorialItem[]);
 }
 
-/* --------- Detalle de submission (para hidratar actores y para UI) -------- */
 export type AnswerDetail = {
   id: string;
   question: {
@@ -188,17 +96,11 @@ export type SubmissionDetail = {
 export async function fetchSubmissionDetail(
   id: string
 ): Promise<SubmissionDetail> {
-  const res = await fetchWithTimeout(
-    `${API_BASE}/submissions/${id}/`,
-    hdr("GET")
-  );
-  return await parseOrThrow<SubmissionDetail>(
-    res,
-    "No se pudo cargar la submission"
-  );
+  return apiFetch<SubmissionDetail>(`submissions/${id}/`, { timeoutMs: 25000 });
 }
 
 /* --------------------- Helpers de visualización/actor -------------------- */
+
 export function displayPlacaFromItem(it: HistorialItem): string {
   return (
     (it.placa_vehiculo ||
@@ -233,7 +135,6 @@ export function getActor(
         }
       : null;
   }
-  // receptor
   return sub.receptor_id || sub.receptor
     ? {
         id: String(sub.receptor_id || sub.receptor?.id || ""),
@@ -263,7 +164,7 @@ export function displayActor(actor: ActorLite | null): string {
 }
 
 /* -------------------- Hidratación de actores en batch -------------------- */
-// Cache simple en memoria para evitar refetch del mismo id
+
 const detailCache = new Map<string, SubmissionDetail>();
 
 async function fetchDetailsBatch(ids: string[], maxConcurrent = 6) {
@@ -274,10 +175,10 @@ async function fetchDetailsBatch(ids: string[], maxConcurrent = 6) {
       slice.map((id) => fetchSubmissionDetail(id))
     );
     for (let j = 0; j < slice.length; j++) {
-      const k = slice[j];
-      const r = chunk[j];
-      if (r.status === "fulfilled") {
-        detailCache.set(k, r.value);
+      const key = slice[j];
+      const response = chunk[j];
+      if (response.status === "fulfilled") {
+        detailCache.set(key, response.value);
       }
     }
   }
@@ -287,18 +188,17 @@ export async function hydrateActors(
   items: HistorialItem[],
   opts?: { maxConcurrent?: number }
 ) {
-  // 1) recolectar ids que necesitan hidratarse
   const ids = new Set<string>();
   for (const it of items) {
     if (it.fase1?.id) ids.add(it.fase1.id);
     if (it.fase2?.id) ids.add(it.fase2.id);
   }
-  // 2) fetch en batch
+
   await fetchDetailsBatch(
     Array.from(ids),
     Math.max(2, opts?.maxConcurrent ?? 6)
   );
-  // 3) merge de actores en items
+
   return items.map((it) => {
     const merged: HistorialItem = JSON.parse(JSON.stringify(it));
     if (it.fase1?.id) {
@@ -348,6 +248,7 @@ export async function hydrateActors(
 }
 
 /* ------------------------- Enriquecimiento de filas ---------------------- */
+
 function humanizeMinutes(m: number | null): string {
   if (!m && m !== 0) return "";
   const d = Math.floor(m / (60 * 24));
@@ -426,6 +327,7 @@ export function enrichHistorial(items: HistorialItem[]): HistorialRow[] {
 }
 
 /* --------------------------- Dedupe defensivo ---------------------------- */
+
 function keyForItem(it: HistorialItem): string {
   const placa = (displayPlacaFromItem(it) || "").toUpperCase();
   const f1 = it.fase1?.id || "";
@@ -433,6 +335,7 @@ function keyForItem(it: HistorialItem): string {
   const ult = it.ultima_fecha_cierre || "";
   return `${placa}::${f1}::${f2}::${ult}`;
 }
+
 export function dedupeHistorialItems(items: HistorialItem[]): HistorialItem[] {
   const seen = new Set<string>();
   const out: HistorialItem[] = [];
@@ -447,7 +350,6 @@ export function dedupeHistorialItems(items: HistorialItem[]): HistorialItem[] {
 }
 
 function pickBetterRow(a: HistorialRow, b: HistorialRow): HistorialRow {
-  // Preferimos la que tenga más info (fase2_id, proveedor, transportista, etc.)
   const score = (r: HistorialRow) =>
     (r.fase2_id ? 2 : 0) +
     (r.proveedor?.id ? 1 : 0) +
@@ -455,27 +357,29 @@ function pickBetterRow(a: HistorialRow, b: HistorialRow): HistorialRow {
     (r.tiempo_estadia_min ? 1 : 0);
   return score(b) > score(a) ? b : a;
 }
+
 export function dedupeRows(rows: HistorialRow[]): HistorialRow[] {
   const map = new Map<string, HistorialRow>();
   for (const r of rows) {
-    const k = `${(r.placa || "").toUpperCase()}::${r.fase1_id || ""}::${r.fase2_id || ""}::${r.ultima_fecha_cierre || ""}`;
-    const prev = map.get(k);
-    map.set(k, prev ? pickBetterRow(prev, r) : r);
+    const key = `${(r.placa || "").toUpperCase()}::${r.fase1_id || ""}::${r.fase2_id || ""}::${r.ultima_fecha_cierre || ""}`;
+    const prev = map.get(key);
+    map.set(key, prev ? pickBetterRow(prev, r) : r);
   }
   return Array.from(map.values());
 }
 
 /* ---------------- Búsqueda / orden / paginación (placa + actor) ---------------- */
+
 export type HistorialQuery = {
-  search?: string; // SOLO placa
+  search?: string;
   estado?: "completo" | "pendiente" | "todos";
   sort?: "reciente" | "antiguo" | "placa";
   dir?: "asc" | "desc";
   page?: number;
   pageSize?: number;
   actor_tipo?: "proveedor" | "transportista" | "todos";
-  actor_text?: string; // nombre/documento
-  actor_id_exact?: string | null; // si usas autocomplete y eliges uno
+  actor_text?: string;
+  actor_id_exact?: string | null;
 };
 
 export function filterSortPaginate(rows: HistorialRow[], q: HistorialQuery = {}) {
@@ -493,18 +397,15 @@ export function filterSortPaginate(rows: HistorialRow[], q: HistorialQuery = {})
 
   let out = [...rows];
 
-  // 1) Filtro por estado
   if (estado !== "todos") {
     out = out.filter((r) => r.estado === estado);
   }
 
-  // 2) Filtro por placa (search)
   const s = norm(search);
   if (s) {
     out = out.filter((r) => norm(r.placa).includes(s));
   }
 
-  // 3) Filtros por actor
   if (actor_tipo !== "todos" || actor_text || actor_id_exact) {
     out = out.filter((r) => {
       const actor =
@@ -523,12 +424,11 @@ export function filterSortPaginate(rows: HistorialRow[], q: HistorialQuery = {})
         const tt = norm(actor_text);
         return !!tt && (nn.includes(tt) || nd.includes(tt));
       }
-      // si no hay criterios, no filtramos
+
       return true;
     });
   }
 
-  // 4) Orden
   out.sort((a, b) => {
     if (sort === "placa") {
       const A = (a.placa || "").toUpperCase();
@@ -536,7 +436,7 @@ export function filterSortPaginate(rows: HistorialRow[], q: HistorialQuery = {})
       const cmp = A.localeCompare(B);
       return dir === "asc" ? cmp : -cmp;
     }
-    // reciente/antiguo usa ultima_fecha_cierre (fallback a fecha_salida/entrada)
+
     const fa =
       a.ultima_fecha_cierre ||
       a.fecha_salida ||
@@ -557,68 +457,60 @@ export function filterSortPaginate(rows: HistorialRow[], q: HistorialQuery = {})
       : cmp;
   });
 
-  // 5) Paginación
   const count = out.length;
   const start = Math.max(0, (page - 1) * pageSize);
   const end = Math.min(out.length, start + pageSize);
+
   return { results: out.slice(start, end), count };
 }
 
 /* --------------- Pipeline: fetch + hydrate + enrich + filtros -------------- */
+
 export async function fetchHistorialEnriched(
   params: Parameters<typeof fetchHistorial>[0],
   query?: HistorialQuery,
   opts?: { hydrate?: boolean; maxConcurrent?: number }
 ): Promise<{ results: HistorialRow[]; count: number }> {
-  // 1) traer y deduplicar items crudos
-  const raw = await fetchHistorial(params); // ya viene dedupe de fetchHistorial
-  // 2) hidratar actores si aplica
+  const raw = await fetchHistorial(params);
   const withActors =
     opts?.hydrate === false
       ? raw
       : await hydrateActors(raw, { maxConcurrent: opts?.maxConcurrent });
-  // 3) enriquecer → filas UI
   const rowsEnriched = enrichHistorial(withActors);
-  // 4) dedupe defensivo a nivel filas enriquecidas
   const rows = dedupeRows(rowsEnriched);
-  // 5) filtros/orden/paginación (count es sobre la colección ya deduplicada)
   return filterSortPaginate(rows, query);
 }
 
 /* ------------------------------ Búsqueda actores -------------------------- */
+
 export async function searchActors(
   params: { tipo: "proveedor" | "transportista" | "receptor"; q?: string }
 ): Promise<ActorLite[]> {
-  const url = new URL(
-    `${API_BASE}/catalogos/actores/`,
-    typeof window !== "undefined"
-      ? window.location.origin
-      : "http://localhost"
-  );
   const tipoBack =
     params.tipo === "proveedor"
       ? "PROVEEDOR"
       : params.tipo === "transportista"
       ? "TRANSPORTISTA"
       : "RECEPTOR";
-  url.searchParams.set("tipo", tipoBack);
-  if (params.q && params.q.trim())
-    url.searchParams.set("search", params.q.trim());
 
-  const res = await fetchWithTimeout(url.toString(), hdr("GET"));
-  const data = await parseOrThrow<any>(res, "No se pudo buscar actores");
+  const query = new URLSearchParams({ tipo: tipoBack });
+  if (params.q && params.q.trim()) query.set("search", params.q.trim());
 
-  // ✅ Soporta ambos formatos
+  const qs = query.toString();
+  const data = await apiFetch<any>(`catalogos/actores/${qs ? `?${qs}` : ""}`, {
+    timeoutMs: 20000,
+  });
+
   const list = Array.isArray(data) ? data : data?.results ?? [];
   return (list as ActorLite[]).slice(0, 50);
 }
 
 /* ----------------------------- Exportación CSV ---------------------------- */
+
 export function exportHistorialCSV(
   rows: HistorialRow[],
   filename = "historial.csv"
 ) {
-  // Por si llaman con filas sin dedupe desde fuera
   const safeRows = dedupeRows(rows);
 
   const headers = [
@@ -675,6 +567,7 @@ export function exportHistorialCSV(
         .join(",")
     );
   }
+
   const blob = new Blob([lines.join("\n")], {
     type: "text/csv;charset=utf-8",
   });
@@ -687,3 +580,4 @@ export function exportHistorialCSV(
   a.remove();
   URL.revokeObjectURL(url);
 }
+

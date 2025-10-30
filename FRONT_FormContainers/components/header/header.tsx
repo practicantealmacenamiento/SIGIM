@@ -11,9 +11,10 @@
  * - Título visible "SIGIM".
  */
 
-import Navbar from "./nabar";            // ⚠️ Se mantiene el import tal cual para no romper.
+import Navbar from "./nabar";
 import { LogoPrebel } from "./logoPrebel";
 import ToggleTheme from "../theme/toggleTheme";
+import InstallPrompt from "../pwa/InstallPrompt";
 
 export const Header = () => {
   return (
@@ -36,6 +37,7 @@ export const Header = () => {
 
           {/* Acciones del header: toggle de tema + logo */}
           <div className="flex items-center gap-3 justify-self-end">
+            <InstallPrompt />
             <ToggleTheme />
             <LogoPrebel />
           </div>
@@ -44,4 +46,3 @@ export const Header = () => {
     </header>
   );
 };
-

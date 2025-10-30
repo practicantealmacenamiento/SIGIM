@@ -1,7 +1,7 @@
 /* eslint-disable @next/next/no-html-link-for-pages */
 "use client";
 
-import { useEffect, useMemo, useState, Suspense } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { adminLogin, isAuthenticated } from "@/lib/api.admin";
 import { CARD, INPUT } from "@/lib/ui";
@@ -214,27 +214,5 @@ function LoginForm() {
 }
 
 export default function LoginPage() {
-  return (
-    <Suspense
-      fallback={
-        <main className="min-h-[calc(100vh-80px)] w-full px-6 md:px-8 py-10">
-          <div className="mx-auto max-w-[520px]">
-            <div className={`${CARD} p-8 md:p-10`}>
-              <h1 className="text-2xl md:text-3xl font-semibold mb-6">Acceso</h1>
-              <div className="animate-pulse">
-                <div className="h-4 bg-gray-200/70 dark:bg-white/10 rounded mb-2"></div>
-                <div className="h-10 bg-gray-200/70 dark:bg-white/10 rounded mb-4"></div>
-                <div className="h-4 bg-gray-200/70 dark:bg-white/10 rounded mb-2"></div>
-                <div className="h-10 bg-gray-200/70 dark:bg-white/10 rounded mb-6"></div>
-                <div className="h-11 bg-gray-200/70 dark:bg-white/10 rounded"></div>
-              </div>
-            </div>
-          </div>
-        </main>
-      }
-    >
-      <LoginForm />
-    </Suspense>
-  );
+  return <LoginForm />;
 }
-

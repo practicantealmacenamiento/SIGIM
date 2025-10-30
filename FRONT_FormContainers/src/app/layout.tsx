@@ -1,13 +1,10 @@
 "use client";
-import { useEffect } from "react";
+import { Suspense, useEffect } from "react";
 import localFont from "next/font/local";
 import "./globals.css";
 import { Header } from "../../components/header/header";
 import { ThemeProvider } from "next-themes";
-import { installGlobalAuthFetch } from "@/lib/api.admin";
 
-// Auth wrapper
-import { AuthProvider } from "../../components/auth/authProvider";
 import AuthGate from "../../components/auth/authGate";
 // instala fetch con credenciales en el cliente
 import ClientAuthBootstrap from "../../components/auth/clientAuthBootstrap";
@@ -17,7 +14,32 @@ const acidGroteskLight = localFont({ src: "./fonts/acid-grotesk-light.woff" });
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
-    installGlobalAuthFetch();
+    if (process.env.NODE_ENV !== "production") {
+      return;
+    }
+
+    if (!("serviceWorker" in navigator)) {
+      return;
+    }
+
+    const registerServiceWorker = () => {
+      navigator.serviceWorker
+        .register("/sw.js", { scope: "/" })
+        .then((registration) => {
+          if (process.env.NODE_ENV === "production") {
+            console.debug("[PWA] Service worker registrado", registration.scope);
+          }
+        })
+        .catch((error) => {
+          console.error("[PWA] Error registrando el service worker", error);
+        });
+    };
+
+    window.addEventListener("load", registerServiceWorker);
+
+    return () => {
+      window.removeEventListener("load", registerServiceWorker);
+    };
   }, []);
 
   return (
@@ -33,20 +55,33 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           Saltar al contenido
         </a>
 
-        <ThemeProvider attribute="class" enableSystem defaultTheme="system" disableTransitionOnChange>
-          {/* Parche global de fetch en el cliente */}
+        <ThemeProvider
+          attribute="class"
+          enableSystem
+          defaultTheme="system"
+          disableTransitionOnChange
+        >
           <ClientAuthBootstrap />
-
-          <AuthProvider>
+          <Suspense
+            fallback={
+              <>
+                <Header />
+                <div
+                  id="content"
+                  className="min-h-[30vh] bg-transparent"
+                  aria-busy="true"
+                />
+              </>
+            }
+          >
             <AuthGate>
               <Header />
               {/* Ancla para el skip link; no afecta a las páginas */}
               <div id="content">{children}</div>
             </AuthGate>
-          </AuthProvider>
+          </Suspense>
         </ThemeProvider>
       </body>
     </html>
   );
 }
-

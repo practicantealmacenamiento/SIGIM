@@ -1,66 +1,6 @@
+import { apiFetch } from "@/lib/http";
 import type { UUID } from "@/types/form";
 
-const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "/api")
-  .replace(/\/+$/, "") + "/";
-
-// === Auth helpers compartidos (token en LS o cookie) ===
-function readCookie(name: string): string | null {
-  if (typeof document === "undefined") return null;
-  const value = `; ${document.cookie}`;
-  const parts = value.split(`; ${name}=`);
-  if (parts.length === 2) return decodeURIComponent(parts.pop()!.split(";").shift() || "");
-  return null;
-}
-function getAuthToken(): string | null {
-  if (typeof localStorage !== "undefined") {
-    const a = localStorage.getItem("auth:access_token");
-    if (a) return a;
-    const b = localStorage.getItem("auth_token");
-    if (b) return b;
-  }
-  return readCookie("auth_token");
-}
-
-// Usar las mismas credenciales que el resto de la aplicación
-const authHeaders = (method: string, extra: Record<string, string> = {}) => {
-  const h = new Headers(extra);
-  if (!h.has("Accept")) h.set("Accept", "application/json");
-  const tok = getAuthToken();
-  if (tok && !h.has("Authorization")) h.set("Authorization", `Bearer ${tok}`);
-  // nota: dejamos que quien llame ponga Content-Type si es JSON
-  return { method, credentials: "include" as const, headers: h };
-};
-
-async function fetchWithTimeout(
-  input: RequestInfo | URL,
-  init: RequestInit & { timeoutMs?: number } = {}
-) {
-  const { timeoutMs = 25000, ...rest } = init;
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), timeoutMs);
-  try {
-    return await fetch(input, { ...rest, signal: ac.signal });
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-async function parseOrThrow<T>(res: Response, fallback: string): Promise<T> {
-  if (res.ok) return res.json();
-  let msg = fallback;
-  try {
-    const txt = await res.text();
-    try {
-      const j = JSON.parse(txt);
-      msg = (j?.detail || j?.error || j?.message || j?.mensaje || txt || fallback) as string;
-    } catch {
-      msg = txt || fallback;
-    }
-  } catch {}
-  throw new Error(msg);
-}
-
-// ==== Tipos ligeros para el panel ====
 export type SubmissionRow = {
   id: UUID;
   placa_vehiculo: string | null;
@@ -69,8 +9,6 @@ export type SubmissionRow = {
   muelle: string | null;
 };
 
-// Intenta extraer el muelle desde answers[] sin depender de cambios en el back.
-// Busca primero por semantic_tag === "muelle" y si no, por coincidencia de texto "muelle".
 function extraerMuelle(answers: any[] | undefined | null): string | null {
   if (!Array.isArray(answers)) return null;
 
@@ -113,7 +51,6 @@ function extraerMuelle(answers: any[] | undefined | null): string | null {
   return null;
 }
 
-// ==== Listado Fase 1 finalizados (pendientes de Fase 2) ====
 export async function listarFase1Finalizados(params: {
   search?: string;
   page?: number;
@@ -121,16 +58,22 @@ export async function listarFase1Finalizados(params: {
 }): Promise<{ results: SubmissionRow[]; count: number }> {
   const { search = "", page = 1, pageSize = 20 } = params;
 
-  const url = new URL(`${API_BASE}submissions/`, window.location.origin);
-  url.searchParams.set("tipo_fase", "entrada");
-  url.searchParams.set("solo_finalizados", "1");
-  url.searchParams.set("solo_pendientes_fase2", "1"); // filtro especial del back
-  if (search.trim()) url.searchParams.set("placa_vehiculo", search.trim());
+  const query = new URLSearchParams({
+    tipo_fase: "entrada",
+    solo_finalizados: "1",
+    solo_pendientes_fase2: "1",
+  });
+  if (search.trim()) query.set("placa_vehiculo", search.trim());
 
-  const res = await fetchWithTimeout(url.toString(), authHeaders("GET"));
-  const data = await parseOrThrow<any>(res, "No se pudo cargar el listado");
+  const endpoint = `submissions/${(() => {
+    const qs = query.toString();
+    return qs ? `?${qs}` : "";
+  })()}`;
+
+  const data = await apiFetch<any>(endpoint, { timeoutMs: 25000 });
   const list = Array.isArray(data) ? data : data.results ?? [];
-  const count = typeof data.count === "number" ? data.count : list.length;
+  const count =
+    typeof data?.count === "number" ? data.count : Array.isArray(list) ? list.length : 0;
 
   const mapped: SubmissionRow[] = list.map((s: any) => ({
     id: s.id,
@@ -142,20 +85,22 @@ export async function listarFase1Finalizados(params: {
 
   const start = Math.max(0, (page - 1) * pageSize);
   const end = start + pageSize;
-
   return { results: mapped.slice(start, end), count };
 }
 
-// ==== Buscar Fase 2 por placa (borrador/no finalizada) ====
 export async function buscarFase2PorPlaca(placa: string): Promise<SubmissionRow | null> {
-  const url = new URL(`${API_BASE}submissions/`, window.location.origin);
-  url.searchParams.set("tipo_fase", "salida");
-  url.searchParams.set("incluir_borradores", "1"); // para traer no finalizadas
-  url.searchParams.set("placa_vehiculo", placa);
+  const params = new URLSearchParams({
+    tipo_fase: "salida",
+    incluir_borradores: "1",
+  });
+  if (placa.trim()) params.set("placa_vehiculo", placa.trim());
 
-  const res = await fetchWithTimeout(url.toString(), authHeaders("GET"));
-  const data = await parseOrThrow<any>(res, "No se pudo buscar Fase 2");
+  const endpoint = `submissions/${(() => {
+    const qs = params.toString();
+    return qs ? `?${qs}` : "";
+  })()}`;
 
+  const data = await apiFetch<any>(endpoint, { timeoutMs: 25000 });
   const list = Array.isArray(data) ? data : data.results ?? [];
   const draft = list.find((s: any) => s.finalizado === false) || null;
 
@@ -165,12 +110,11 @@ export async function buscarFase2PorPlaca(placa: string): Promise<SubmissionRow 
         placa_vehiculo: draft.placa_vehiculo ?? null,
         regulador_id: draft.regulador_id ?? null,
         fecha_cierre: draft.fecha_cierre ?? null,
-        muelle: extraerMuelle(draft.answers) ?? null, // en Fase 2 normalmente no aplica
+        muelle: extraerMuelle(draft.answers) ?? null,
       }
     : null;
 }
 
-// ==== Crear Fase 2 ====
 export async function crearSubmissionFase2(payload: {
   questionnaire_id_fase2: UUID;
   placa_vehiculo: string;
@@ -183,17 +127,18 @@ export async function crearSubmissionFase2(payload: {
     regulador_id: payload.regulador_id ?? null,
   };
 
-  const res = await fetchWithTimeout(`${API_BASE}submissions/`, {
-    ...authHeaders("POST", { "Content-Type": "application/json" }),
-    body: JSON.stringify(body),
+  const data = await apiFetch<any>("submissions/", {
+    method: "POST",
+    json: body,
+    timeoutMs: 25000,
   });
-  const data = await parseOrThrow<any>(res, "No se pudo crear la Fase 2");
 
   return {
     id: data.id,
     placa_vehiculo: data.placa_vehiculo ?? null,
     regulador_id: data.regulador_id ?? null,
     fecha_cierre: data.fecha_cierre ?? null,
-    muelle: null, // Fase 2 recién creada no trae muelle
+    muelle: null,
   };
 }
+

@@ -2,268 +2,289 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
 import {
-  AUTH_TOKEN_KEY,
-  clearAuthToken,
-  getAuthToken,
-} from "@/lib/api.admin";
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { clearAuthToken } from "@/lib/api.admin";
+import { useSessionState } from "../auth/useSessionState";
 
-/**
- * Navbar (login unificado, solo localStorage)
- * -------------------------------------------------------
- * - Lee auth desde localStorage; sin cookies.
- * - Claves de username/is_staff configurables por ENV.
- * - Recalcula estado en: mount, cambio de ruta, storage, focus y visibility.
- * - Si hay token y STAFF_KEY no existe, se asume staff "optimista" para mostrar Admin.
- * - Mantiene estructura y estilos actuales (incluye <header>).
- */
-
-// Estilos base / activo para enlaces
 const baseLink =
   "inline-flex items-center gap-2 px-3 py-2 text-sm md:text-base rounded-md border-b-2 border-transparent text-slate-700 dark:text-bone hover:bg-slate-50/60 dark:hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/30";
 const activeLink = "text-sky-600 dark:text-sky-400 border-current";
 
-// ID de Fase 1 (si está configurado)
 const Q_FASE1 = process.env.NEXT_PUBLIC_Q_FASE1_ID || null;
 
-// Claves username y staff (overridable vía ENV)
-const USERNAME_KEY =
-  process.env.NEXT_PUBLIC_AUTH_USERNAME_KEY || "auth:username";
-const STAFF_KEY =
-  process.env.NEXT_PUBLIC_AUTH_IS_STAFF_KEY || "auth:is_staff";
-
-// Util: parseo de booleanos guardados en LS
-function parseBool(v: string | null | undefined): boolean {
-  if (!v) return false;
-  const s = v.trim().toLowerCase();
-  return s === "1" || s === "true" || s === "yes" || s === "on";
-}
+type NavItem = {
+  href: string;
+  label: string;
+  title: string;
+  active: boolean;
+  prefetch?: boolean;
+};
 
 export default function Navbar() {
   const pathname = usePathname();
+  const session = useSessionState();
+  const isAuth = session.ready ? session.authed : false;
+  const isStaff = session.ready ? session.isStaff : false;
+  const username = session.ready ? session.username : null;
 
-  /* ========== Estado de sesión ========== */
-  const [isAuth, setIsAuth] = useState(false);
-  const [isStaff, setIsStaff] = useState(false);
-  const [username, setUsername] = useState<string | null>(null);
-
-  // Recalcula flags en base a LS (y getAuthToken() como respaldo)
-  const recomputeAuth = () => {
-    const token =
-      typeof localStorage !== "undefined"
-        ? localStorage.getItem(AUTH_TOKEN_KEY)
-        : null;
-    const name =
-      typeof localStorage !== "undefined"
-        ? localStorage.getItem(USERNAME_KEY)
-        : null;
-    const staffStored =
-      typeof localStorage !== "undefined"
-        ? localStorage.getItem(STAFF_KEY)
-        : null;
-
-    // Doble chequeo de token por seguridad (LS + helper)
-    const authed = !!(token || getAuthToken());
-
-    // Regla: si STAFF_KEY existe -> respetar; si no -> si hay token, asumir staff
-    const staff = staffStored === null ? !!token : parseBool(staffStored);
-
-    setIsAuth(authed);
-    setIsStaff(staff);
-    setUsername(name && name.trim() ? name.trim() : null);
-  };
-
-  /* ========== Ciclo de vida: mount + listeners globales ========== */
-  useEffect(() => {
-    recomputeAuth();
-
-    const onStorage = (e: StorageEvent) => {
-      // Solo reaccionar si cambian las claves relevantes
-      if (
-        !e.key ||
-        e.key === AUTH_TOKEN_KEY ||
-        e.key === USERNAME_KEY ||
-        e.key === STAFF_KEY
-      ) {
-        recomputeAuth();
-      }
-    };
-    const onFocus = () => recomputeAuth();
-    const onVis = () =>
-      document.visibilityState === "visible" && recomputeAuth();
-
-    window.addEventListener("storage", onStorage);
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVis);
-
-    return () => {
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVis);
-    };
-  }, []);
-
-  /* ========== Cuando cambia la ruta: refrescar auth y cerrar menú ========== */
-  useEffect(() => {
-    recomputeAuth();
-    setOpen(false);
-  }, [pathname]);
-
-  /* ========== Helpers de navegación ========== */
-  const isActive = (href: string) =>
-    pathname === href || pathname.startsWith(href + "/");
+  const isActive = useCallback(
+    (href: string) => {
+      if (!pathname) return false;
+      return pathname === href || pathname.startsWith(`${href}/`);
+    },
+    [pathname],
+  );
 
   const hrefFormulario = Q_FASE1
     ? `/formulario?questionnaire_id=${Q_FASE1}`
-    : "/seleccion-formulario";
+    : "/formulario";
 
-  const formularioIsActive =
-    isActive("/formulario") ||
-    isActive("/fase1") ||
-    isActive("/seleccion-formulario");
-
+  const homeActive = isActive("/");
+  const formularioActive = isActive("/formulario");
+  const panelActive = isActive("/panel");
+  const historialActive = isActive("/historial");
   const adminHref = "/admin";
-  const adminIsActive = isActive("/admin");
+  const adminActive = isActive(adminHref);
 
-  /* ========== Dropdown de usuario ========== */
-  const [open, setOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState<{
+  const navItems = useMemo<NavItem[]>(
+    () => {
+      const items: NavItem[] = [
+        {
+          href: "/",
+          label: "Inicio",
+          title: "Inicio",
+          active: homeActive,
+        },
+        {
+          href: hrefFormulario,
+          label: "Formulario",
+          title: "Completar formulario",
+          active: formularioActive,
+        },
+        {
+          href: "/panel",
+          label: "Panel",
+          title: "Panel principal",
+          active: panelActive,
+        },
+        {
+          href: "/historial",
+          label: "Historial",
+          title: "Historial de formularios",
+          active: historialActive,
+        },
+      ];
+
+      if (isAuth && isStaff) {
+        items.push({
+          href: adminHref,
+          label: "Admin",
+          title: "Administracion",
+          active: adminActive,
+          prefetch: false,
+        });
+      }
+
+      return items;
+    },
+    [
+      adminActive,
+      adminHref,
+      formularioActive,
+      hrefFormulario,
+      historialActive,
+      homeActive,
+      isAuth,
+      isStaff,
+      panelActive,
+    ],
+  );
+
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [userMenuPos, setUserMenuPos] = useState<{
     top: number;
     left: number;
     minWidth: number;
   } | null>(null);
-  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const userButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [mobileOpen, setMobileOpen] = useState(false);
 
-  function toggleMenu() {
-    setOpen((v) => {
-      const next = !v;
-      if (next && btnRef.current) {
-        const r = btnRef.current.getBoundingClientRect();
-        const minWidth = Math.max(220, r.width);
-        const viewportW = window.innerWidth;
+  useEffect(() => {
+    setUserMenuOpen(false);
+    setMobileOpen(false);
+  }, [pathname]);
+
+  const toggleUserMenu = useCallback(() => {
+    setMobileOpen(false);
+    setUserMenuOpen((current) => {
+      const next = !current;
+      if (next && userButtonRef.current) {
+        const rect = userButtonRef.current.getBoundingClientRect();
+        const width = Math.max(220, rect.width);
+        const viewportWidth = window.innerWidth;
         const left = Math.min(
-          Math.max(8, r.right - minWidth),
-          viewportW - minWidth - 8
+          Math.max(8, rect.right - width),
+          viewportWidth - width - 8,
         );
-        setMenuPos({ top: r.bottom + 8, left, minWidth });
+        setUserMenuPos({
+          top: rect.bottom + 8,
+          left,
+          minWidth: width,
+        });
       }
       return next;
     });
-  }
+  }, []);
 
-  // Cierre por click fuera / Escape / scroll / resize
   useEffect(() => {
-    function onDocClick(e: MouseEvent) {
-      if (!open) return;
-      const t = e.target as Node;
-      if (btnRef.current?.contains(t)) return;
-      setOpen(false);
+    function onDocClick(event: MouseEvent) {
+      if (!userMenuOpen) return;
+      const target = event.target as Node;
+      if (userButtonRef.current?.contains(target)) return;
+      setUserMenuOpen(false);
     }
-    function onEsc(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
+
+    function onEsc(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setUserMenuOpen(false);
+      }
     }
+
     function onScroll() {
-      if (open) setOpen(false);
+      if (userMenuOpen) setUserMenuOpen(false);
     }
+
     document.addEventListener("click", onDocClick);
     document.addEventListener("keydown", onEsc);
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onScroll);
+
     return () => {
       document.removeEventListener("click", onDocClick);
       document.removeEventListener("keydown", onEsc);
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onScroll);
     };
-  }, [open]);
+  }, [userMenuOpen]);
+
+  const toggleMobileMenu = useCallback(() => {
+    setMobileOpen((current) => {
+      const next = !current;
+      if (next) {
+        setUserMenuOpen(false);
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+
+    function onEsc(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setMobileOpen(false);
+      }
+    }
+
+    function onResize() {
+      if (window.innerWidth >= 768) {
+        setMobileOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", onEsc);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("keydown", onEsc);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [mobileOpen]);
 
   const loginHref = `/login?next=${encodeURIComponent(pathname || "/")}`;
 
-  function onLogout() {
+  const onLogout = useCallback(() => {
     clearAuthToken();
-    const next =
+    const current =
       typeof window !== "undefined"
         ? encodeURIComponent(window.location.pathname || "/")
         : "%2F";
-    window.location.replace(`/login?next=${next}`);
-  }
+    window.location.replace(`/login?next=${current}`);
+  }, []);
 
-  /* ========== Render ========== */
+  const closeMobileMenu = useCallback(() => setMobileOpen(false), []);
+
   return (
-    <header className="w-full border-b bg-background">
-      <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4">
-        {/* Navegación primaria */}
-        <nav
-          className="flex items-center gap-2 md:gap-3 whitespace-nowrap overflow-x-auto"
-          aria-label="Navegación principal"
+    <>
+      <div className="flex h-14 items-center justify-between gap-2">
+        <button
+          type="button"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 transition hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 md:hidden dark:border-white/10 dark:bg-slate-900 dark:text-bone dark:hover:bg-slate-800"
+          onClick={toggleMobileMenu}
+          aria-expanded={mobileOpen}
+          aria-controls="mobile-nav-panel"
+          aria-label={mobileOpen ? "Cerrar menu" : "Abrir menu"}
         >
-          <Link
-            href="/"
-            className={`${baseLink} ${isActive("/") ? activeLink : ""}`}
-            aria-current={isActive("/") ? "page" : undefined}
-            title="Inicio"
+          <svg
+            className="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
           >
-            Inicio
-          </Link>
+            {mobileOpen ? (
+              <path d="M6 6l12 12M6 18L18 6" />
+            ) : (
+              <>
+                <path d="M4 6h16" />
+                <path d="M4 12h16" />
+                <path d="M4 18h16" />
+              </>
+            )}
+          </svg>
+        </button>
 
-          <Link
-            href={hrefFormulario}
-            className={`${baseLink} ${formularioIsActive ? activeLink : ""}`}
-            aria-current={formularioIsActive ? "page" : undefined}
-            title={Q_FASE1 ? "Abrir Fase 1" : "Seleccionar formulario"}
-          >
-            Formulario
-          </Link>
-
-          <Link
-            href="/panel"
-            className={`${baseLink} ${isActive("/panel") ? activeLink : ""}`}
-            aria-current={isActive("/panel") ? "page" : undefined}
-          >
-            Panel
-          </Link>
-
-          <Link
-            href="/historial"
-            className={`${baseLink} ${isActive("/historial") ? activeLink : ""}`}
-            aria-current={isActive("/historial") ? "page" : undefined}
-          >
-            Historial
-          </Link>
-
-          {isAuth && isStaff && (
+        <div className="hidden flex-1 items-center justify-center gap-2 overflow-x-auto md:flex md:gap-3">
+          {navItems.map(({ href, label, title, active, prefetch }) => (
             <Link
-              href={adminHref}
-              prefetch={false}
-              className={`${baseLink} ${adminIsActive ? activeLink : ""}`}
-              aria-current={adminIsActive ? "page" : undefined}
-              title="Administración"
+              key={href}
+              href={href}
+              prefetch={prefetch}
+              className={`${baseLink} ${active ? activeLink : ""}`}
+              aria-current={active ? "page" : undefined}
+              title={title}
             >
-              Admin
+              {label}
             </Link>
-          )}
-        </nav>
+          ))}
+        </div>
 
-        {/* Área de sesión (login / menú de usuario) */}
         <div className="flex items-center gap-2">
           {isAuth ? (
             <>
               <button
-                ref={btnRef}
+                ref={userButtonRef}
                 type="button"
-                className={`${baseLink} ${open ? activeLink : ""}`}
+                className={`${baseLink} ${userMenuOpen ? activeLink : ""}`}
                 aria-haspopup="menu"
-                aria-expanded={open}
-                onClick={toggleMenu}
+                aria-expanded={userMenuOpen}
+                onClick={toggleUserMenu}
                 title={username || "Cuenta"}
               >
-                <span className="inline-grid place-items-center w-6 h-6 rounded-full bg-sky-500/10 text-sky-600 font-semibold">
+                <span className="inline-grid h-6 w-6 place-items-center rounded-full bg-sky-500/10 text-sky-600 font-semibold">
                   {(username || "U").slice(0, 1).toUpperCase()}
                 </span>
-                <span className="font-medium">{username || "Usuario"}</span>
+                <span className="hidden sm:inline font-medium">
+                  {username || "Usuario"}
+                </span>
                 <svg
-                  className="w-4 h-4 opacity-70"
+                  className="h-4 w-4 opacity-70"
                   viewBox="0 0 20 20"
                   fill="currentColor"
                   aria-hidden="true"
@@ -272,26 +293,26 @@ export default function Navbar() {
                 </svg>
               </button>
 
-              {open && menuPos && (
+              {userMenuOpen && userMenuPos && (
                 <div
                   role="menu"
                   style={{
                     position: "fixed",
-                    top: menuPos.top,
-                    left: menuPos.left,
-                    minWidth: menuPos.minWidth,
+                    top: userMenuPos.top,
+                    left: userMenuPos.left,
+                    minWidth: userMenuPos.minWidth,
                   }}
-                  className="rounded-xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-slate-900 shadow-lg overflow-hidden z-[9999]"
+                  className="z-[9999] overflow-hidden rounded-xl border border-slate-200/70 bg-white shadow-lg dark:border-white/10 dark:bg-slate-900"
                 >
                   <div className="px-3 py-2 text-xs text-slate-500">
-                    Sesión iniciada
+                    Sesion iniciada
                   </div>
 
                   <Link
                     href="/panel"
                     role="menuitem"
                     className="block px-4 py-2 text-sm hover:bg-slate-50 dark:hover:bg-white/5"
-                    onClick={() => setOpen(false)}
+                    onClick={() => setUserMenuOpen(false)}
                   >
                     Panel
                   </Link>
@@ -299,7 +320,7 @@ export default function Navbar() {
                     href="/historial"
                     role="menuitem"
                     className="block px-4 py-2 text-sm hover:bg-slate-50 dark:hover:bg-white/5"
-                    onClick={() => setOpen(false)}
+                    onClick={() => setUserMenuOpen(false)}
                   >
                     Historial
                   </Link>
@@ -309,9 +330,9 @@ export default function Navbar() {
                       href="/admin"
                       role="menuitem"
                       className="block px-4 py-2 text-sm hover:bg-slate-50 dark:hover:bg-white/5"
-                      onClick={() => setOpen(false)}
+                      onClick={() => setUserMenuOpen(false)}
                     >
-                      Administración
+                      Administracion
                     </Link>
                   )}
 
@@ -319,10 +340,10 @@ export default function Navbar() {
 
                   <button
                     role="menuitem"
-                    className="w-full text-left px-4 py-2 text-sm hover:bg-slate-50 dark:hover:bg-white/5"
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-slate-50 dark:hover:bg-white/5"
                     onClick={onLogout}
                   >
-                    Cerrar sesión
+                    Cerrar sesion
                   </button>
                 </div>
               )}
@@ -332,13 +353,92 @@ export default function Navbar() {
               href={loginHref}
               className={`${baseLink} ${isActive("/login") ? activeLink : ""}`}
               aria-current={isActive("/login") ? "page" : undefined}
-              title="Iniciar sesión"
+              title="Iniciar sesion"
             >
-              Iniciar sesión
+              Iniciar sesion
             </Link>
           )}
         </div>
       </div>
-    </header>
+
+      {mobileOpen && (
+        <div className="md:hidden">
+          <button
+            type="button"
+            className="fixed inset-0 z-40 bg-black/30 backdrop-blur-sm"
+            onClick={closeMobileMenu}
+            aria-hidden="true"
+          />
+          <div
+            id="mobile-nav-panel"
+            className="fixed inset-x-4 top-[72px] z-50 rounded-2xl border border-slate-200/70 bg-white p-4 shadow-xl dark:border-white/10 dark:bg-slate-900"
+          >
+            <div className="space-y-2">
+              {navItems.map(({ href, label, title, active, prefetch }) => (
+                <Link
+                  key={`mobile-${href}`}
+                  href={href}
+                  prefetch={prefetch}
+                  className={`${baseLink} w-full justify-between ${active ? activeLink : ""}`}
+                  aria-current={active ? "page" : undefined}
+                  title={title}
+                  onClick={closeMobileMenu}
+                >
+                  <span>{label}</span>
+                  {active && (
+                    <svg
+                      className="h-4 w-4 text-sky-500"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                    >
+                      <path d="M7.5 13l-2.5-2.5 1.41-1.41L7.5 10.17l5.59-5.58L14.5 6l-7 7z" />
+                    </svg>
+                  )}
+                </Link>
+              ))}
+            </div>
+
+            <div className="mt-4 border-t border-slate-200/70 pt-4 dark:border-white/10">
+              {isAuth ? (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-3">
+                    <span className="inline-grid h-9 w-9 place-items-center rounded-full bg-sky-500/10 text-sky-600 font-semibold">
+                      {(username || "U").slice(0, 1).toUpperCase()}
+                    </span>
+                    <div>
+                      <p className="text-sm font-medium text-slate-900 dark:text-bone">
+                        {username || "Usuario"}
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Sesion activa
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="w-full rounded-lg bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-200 dark:bg-white/10 dark:text-bone dark:hover:bg-white/20"
+                    onClick={() => {
+                      closeMobileMenu();
+                      onLogout();
+                    }}
+                  >
+                    Cerrar sesion
+                  </button>
+                </div>
+              ) : (
+                <Link
+                  href={loginHref}
+                  className="block rounded-lg bg-sky-600 px-4 py-2 text-center text-sm font-medium text-white transition hover:bg-sky-500"
+                  onClick={closeMobileMenu}
+                >
+                  Iniciar sesion
+                </Link>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

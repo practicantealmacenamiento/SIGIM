@@ -42,9 +42,9 @@ Define al menos las siguientes claves en `.env.local`:
 Si el backend requiere cabeceras especiales, ajusta `lib/http.ts` o agrega nuevas variables con la nomenclatura `NEXT_PUBLIC_*`.
 
 ## Flujo de autenticacion
-- El componente `AuthProvider` consume `/api/login/` y `/api/whoami/`, almacena el token en la cookie `auth_token` y sincroniza la bandera `is_staff`.
-- El middleware (`middleware.ts`) bloquea rutas si no existe `sessionid` o `auth_token` y redirige al login preservando la ruta solicitada (`?next=`).
-- Durante la sesion el cliente HTTP (`lib/http.ts` y `lib/api.*.ts`) adjunta las cookies necesarias (`credentials: include`) y limpia la sesion ante errores 401.
+- `ClientAuthBootstrap` instala el `fetch` global autenticado y sincroniza `auth:username` / `auth:is_staff` en `localStorage`.
+- `AuthGate` junto con `useSessionState` valida el token almacenado, protege las rutas bajo `/admin`, `/panel`, `/historial` y `/formulario`, y mantiene la UI sincronizada entre pestañas.
+- Los clientes HTTP (`lib/http.ts` y `lib/api.*.ts`) inyectan `Authorization: Bearer` y limpian las credenciales cuando reciben errores 401.
 
 ## Estructura relevante
 - `src/app/`: paginas del App Router (formulario, historial, panel, login).
@@ -56,6 +56,6 @@ Si el backend requiere cabeceras especiales, ajusta `lib/http.ts` o agrega nueva
 ## Trabajo diario
 - Ejecuta `npm run lint` antes de subir cambios para asegurar convenciones uniformes.
 - Ajusta las fuentes en `src/app/layout.tsx` cuando se agreguen tipografias nuevas.
-- Para depurar peticiones, revisa `API_BASE` expuesta por `lib/api.form.ts`; muestra el destino final calculado con las variables de entorno.
+- Para depurar peticiones, revisa `API_BASE` expuesta por `lib/http.ts`; muestra el destino final calculado con las variables de entorno.
 
 Para detalles adicionales revisa la documentacion del backend en `BACK_FormContainers/docs/` y las instrucciones generales del repositorio en el README de la raiz.

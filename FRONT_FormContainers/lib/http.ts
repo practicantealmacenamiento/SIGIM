@@ -1,128 +1,275 @@
-// lib/http.ts
+"use client";
 
-// ==== Cookies helpers ====
-export function getCookie(name: string): string | null {
+/**
+ * Capa HTTP compartida para el frontend.
+ * - Resuelve una base de API tolerante a distintos despliegues.
+ * - Adjunta automáticamente Authorization y CSRF.
+ * - Ofrece manejo de timeouts y parsing uniforme de errores.
+ */
+
+/* =========================
+ * Resolución de base API
+ * ========================= */
+
+const trimEndSlash = (s: string) => s.replace(/\/+$/, "");
+const hasProto = (s: string) => /^https?:\/\//i.test(s);
+
+function resolveApiBase(): string {
+  const origin = trimEndSlash(process.env.NEXT_PUBLIC_BACKEND_ORIGIN || "");
+  const prefix = trimEndSlash(process.env.NEXT_PUBLIC_API_PREFIX || "/api/v1");
+
+  let envApiUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+  if (envApiUrl) envApiUrl = trimEndSlash(envApiUrl);
+
+  let base = "/api";
+
+  if (envApiUrl) {
+    if (hasProto(envApiUrl)) {
+      if (/\/api$/i.test(envApiUrl) && prefix.toLowerCase() === "/api/v1") {
+        base = envApiUrl.replace(/\/api$/i, "") + prefix;
+      } else {
+        base = envApiUrl;
+      }
+    } else {
+      base = envApiUrl;
+    }
+  } else if (origin) {
+    base = origin + (prefix.startsWith("/") ? "" : "/") + prefix;
+  }
+
+  return trimEndSlash(base);
+}
+
+function resolveAdminApiBase(apiBase: string): string {
+  const raw = (process.env.NEXT_PUBLIC_ADMIN_API_URL || "").trim();
+  if (!raw) return apiBase;
+  if (hasProto(raw)) return trimEndSlash(raw);
+  return trimEndSlash(raw);
+}
+
+export const API_BASE = resolveApiBase();
+export const ADMIN_API_BASE = resolveAdminApiBase(API_BASE);
+
+export function buildApiUrl(path: string, base: string = API_BASE) {
+  const cleanBase = trimEndSlash(base || "");
+  const cleanPath = String(path || "").replace(/^\/+/, "");
+  if (!cleanPath) return `${cleanBase}/`;
+
+  const needsTrailingSlash =
+    !cleanPath.endsWith("/") &&
+    !cleanPath.includes("?") &&
+    !/\.[a-z0-9]+$/i.test(cleanPath);
+
+  return `${cleanBase}/${cleanPath}${needsTrailingSlash ? "/" : ""}`;
+}
+
+/* =========================
+ * Auth helpers
+ * ========================= */
+
+const DEFAULT_TOKEN_KEY =
+  process.env.NEXT_PUBLIC_AUTH_TOKEN_KEY || "auth:access_token";
+const LEGACY_TOKEN_KEYS = [DEFAULT_TOKEN_KEY, "auth_token"];
+
+export function readCookie(name: string): string | null {
   if (typeof document === "undefined") return null;
-  const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
-  return m ? decodeURIComponent(m[1]) : null;
-}
-export function setCookie(name: string, value: string, days = 7) {
-  if (typeof document === "undefined") return;
-  const expires = new Date(Date.now() + days * 864e5).toUTCString();
-  document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Expires=${expires}; SameSite=Lax`;
-}
-export function delCookie(name: string) {
-  if (typeof document === "undefined") return;
-  document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax`;
-}
-export const cookies = { get: getCookie, set: setCookie, del: delCookie };
-
-// ==== URL builders ====
-export const API_BASE =
-  (process.env.NEXT_PUBLIC_API_URL || "/api/").replace(/\/?$/, "/");
-export const ADMIN_API_BASE =
-  (process.env.NEXT_PUBLIC_ADMIN_API_URL || API_BASE).replace(/\/?$/, "/");
-
-export function buildUrl(path: string, base: string = API_BASE) {
-  const left = (base || "").replace(/\/+$/, "");
-  const p0 = String(path || "");
-  const p = p0.replace(/^\/+/, "");
-  // Mantén la barra final estilo Django salvo que haya query o parezca archivo
-  const finalPath = /\?|(\.[a-z0-9]+)$/i.test(p) || p.endsWith("/") ? p : `${p}/`;
-  return `${left}/${finalPath}`;
+  const value = `; ${document.cookie}`;
+  const parts = value.split(`; ${name}=`);
+  if (parts.length === 2)
+    return decodeURIComponent(parts.pop()!.split(";").shift() || "");
+  return null;
 }
 
-// ==== HTTP ====
-type HttpOptions = RequestInit & {
-  json?: unknown;            // atajo: cuerpo JSON
-  authToken?: string | null; // opcional: Authorization: <scheme> <token>
-  authScheme?: "Token" | "Bearer"; // opcional: por defecto "Token"
-  useAdminBase?: boolean;    // opcional: usar base de admin
+function readLocalStorage(key: string): string | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+export function getAuthToken(): string | undefined {
+  for (const key of LEGACY_TOKEN_KEYS) {
+    const value = readLocalStorage(key);
+    if (value) return value;
+  }
+  const cookieToken = readCookie("auth_token");
+  return cookieToken || undefined;
+}
+
+/* =========================
+ * Fetch helpers
+ * ========================= */
+
+function isFormData(body: unknown): body is FormData {
+  return typeof FormData !== "undefined" && body instanceof FormData;
+}
+
+export async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: (RequestInit & { timeoutMs?: number }) = {}
+): Promise<Response> {
+  const { timeoutMs, signal, ...rest } = init;
+  if (!timeoutMs) {
+    return fetch(input, { ...rest, signal });
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  const cleanup = () => clearTimeout(timer);
+
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+
+  try {
+    return await fetch(input, { ...rest, signal: controller.signal });
+  } finally {
+    cleanup();
+  }
+}
+
+function pickErrorMessage(data: any): string | null {
+  if (!data) return null;
+  if (typeof data === "string") return data;
+  const first = (...xs: any[]) =>
+    xs.find((v) => typeof v === "string" && v.trim());
+  const direct = first(data.detail, data.error, data.message, data.mensaje);
+  if (direct) return direct;
+
+  if (Array.isArray(data.non_field_errors) && data.non_field_errors[0])
+    return String(data.non_field_errors[0]);
+  if (Array.isArray(data.answer) && data.answer[0])
+    return String(data.answer[0]);
+
+  for (const key of Object.keys(data)) {
+    const value = data[key];
+    if (typeof value === "string" && value.trim()) return value;
+    if (Array.isArray(value) && typeof value[0] === "string" && value[0].trim())
+      return value[0];
+  }
+  return null;
+}
+
+async function parseErrorResponse(res: Response) {
+  const text = await res.text().catch(() => "");
+  if (!text) {
+    return {
+      message: res.statusText || `HTTP ${res.status}`,
+      data: null,
+    };
+  }
+
+  try {
+    const data = JSON.parse(text);
+    const message =
+      pickErrorMessage(data) || res.statusText || `HTTP ${res.status}`;
+    return { message, data };
+  } catch {
+    return { message: text, data: null };
+  }
+}
+
+/* =========================
+ * apiFetch principal
+ * ========================= */
+
+export type ApiFetchOptions = RequestInit & {
+  json?: unknown;
+  skipAuth?: boolean;
+  expectBlob?: boolean;
+  expectText?: boolean;
+  baseUrl?: string;
+  timeoutMs?: number;
 };
 
-function isFormDataBody(b: unknown): b is FormData {
-  // En entornos donde FormData no existe (SSR), evitar instanceof
-  return typeof FormData !== "undefined" && b instanceof FormData;
-}
+export async function apiFetch<T = any>(
+  endpoint: string,
+  options: ApiFetchOptions = {}
+): Promise<T> {
+  const {
+    json,
+    skipAuth = false,
+    expectBlob = false,
+    expectText = false,
+    baseUrl,
+    timeoutMs,
+    headers,
+    ...rest
+  } = options;
 
-async function readBodySafely<T>(res: Response): Promise<T> {
-  // 204 No Content o sin body
-  if (res.status === 204) return undefined as unknown as T;
-  const ctype = (res.headers.get("content-type") || "").toLowerCase();
+  const url = hasProto(endpoint)
+    ? endpoint
+    : buildApiUrl(endpoint, baseUrl ?? API_BASE);
 
-  if (ctype.includes("application/json")) {
-    // Algunos backends devuelven vacío con JSON CT
-    const text = await res.text();
-    return (text ? JSON.parse(text) : null) as T;
-  }
-  if (ctype.includes("text/")) {
-    return (await res.text()) as unknown as T;
-  }
-  // blob u otros
-  return (await res.blob()) as unknown as T;
-}
+  const method = (rest.method || "GET").toUpperCase();
+  const finalHeaders = new Headers(headers || {});
 
-export async function http<T = any>(path: string, opts: HttpOptions = {}): Promise<T> {
-  const base = opts.useAdminBase ? ADMIN_API_BASE : API_BASE;
-  const url = buildUrl(path, base);
-
-  const headers = new Headers(opts.headers || {});
-  const init: RequestInit = { ...opts };
-
-  // JSON helper (si pasas 'json', nosotros seteamos body y Content-Type)
-  if (opts.json !== undefined) {
-    if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-    init.body = JSON.stringify(opts.json);
+  if (!finalHeaders.has("Accept") && !expectBlob) {
+    finalHeaders.set("Accept", "application/json");
   }
 
-  // Si hay body y NO es FormData, y no hay Content-Type aún, asumimos JSON
-  if (init.body && !headers.has("Content-Type") && !isFormDataBody(init.body)) {
-    headers.set("Content-Type", "application/json");
+  const init: RequestInit = { ...rest };
+
+  if (json !== undefined) {
+    init.body = JSON.stringify(json);
+    if (!finalHeaders.has("Content-Type")) {
+      finalHeaders.set("Content-Type", "application/json");
+    }
   }
 
-  // CSRF (si usas SessionAuth)
-  const method = (init.method || "GET").toUpperCase();
-  const isWrite = !["GET", "HEAD", "OPTIONS"].includes(method);
-  const csrf = getCookie("csrftoken");
-  if (isWrite && csrf && !headers.has("X-CSRFToken")) {
-    headers.set("X-CSRFToken", csrf);
+  if (
+    init.body &&
+    !isFormData(init.body) &&
+    !finalHeaders.has("Content-Type")
+  ) {
+    if (typeof init.body === "string") {
+      finalHeaders.set("Content-Type", "application/json");
+    }
   }
 
-  // Authorization opcional (para admin o APIs privadas)
-  const tok = opts.authToken;
-  if (tok && !headers.has("Authorization")) {
-    const scheme = opts.authScheme || "Token"; // default conservador
-    headers.set("Authorization", `${scheme} ${tok}`);
+  const isUnsafe = !["GET", "HEAD", "OPTIONS"].includes(method);
+  if (isUnsafe && !finalHeaders.has("X-CSRFToken")) {
+    const csrf = readCookie("csrftoken");
+    if (csrf) finalHeaders.set("X-CSRFToken", csrf);
   }
 
-  // Credenciales para enviar cookies de sesión
-  const USE_CREDENTIALS =
-    (process.env.NEXT_PUBLIC_USE_CREDENTIALS || "true").toLowerCase() === "true";
-  init.credentials = USE_CREDENTIALS ? "include" : (init.credentials || "same-origin");
-  init.headers = headers;
+  if (!skipAuth && !finalHeaders.has("Authorization")) {
+    const token = getAuthToken();
+    if (token) finalHeaders.set("Authorization", `Bearer ${token}`);
+  }
 
-  const res = await fetch(url, init);
+  const credentials = init.credentials ?? "include";
 
-  if (!res.ok) {
-    // Error informativo
-    let detail: any = null;
-    try {
-      const ctype = res.headers.get("content-type") || "";
-      detail = ctype.includes("application/json") ? await res.json() : await res.text();
-    } catch { /* ignore */ }
+  const response = await fetchWithTimeout(url, {
+    ...init,
+    headers: finalHeaders,
+    credentials,
+    timeoutMs,
+  });
 
-    const msg =
-      typeof detail === "string"
-        ? detail
-        : detail?.detail || detail?.error || `HTTP ${res.status}`;
-
-    const err = Object.assign(new Error(msg), {
-      status: res.status,
-      data: detail,
+  if (!response.ok) {
+    const { message, data } = await parseErrorResponse(response);
+    const error = Object.assign(new Error(message), {
+      status: response.status,
+      data,
       url,
     });
-    throw err;
+    throw error;
   }
 
-  return await readBodySafely<T>(res);
+  if (expectBlob) return (await response.blob()) as any;
+  if (expectText) return (await response.text()) as any;
+
+  const contentType = response.headers.get("Content-Type") || "";
+  if (contentType.includes("application/json")) {
+    return (await response.json()) as T;
+  }
+  return (null as unknown) as T;
 }
+
+export const http = apiFetch;
+

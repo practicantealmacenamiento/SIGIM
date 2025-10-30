@@ -6,6 +6,9 @@ import {
   fetchWhoAmI,
   isAuthenticated,
   purgeLegacyAuthArtifacts,
+  AUTH_USERNAME_KEY,
+  AUTH_IS_STAFF_KEY,
+  notifyAuthListeners,
 } from "@/lib/api.admin";
 
 /**
@@ -27,11 +30,6 @@ import {
  */
 
 // Claves en localStorage (permiten override por variables públicas de build)
-const USERNAME_KEY =
-  (process.env.NEXT_PUBLIC_AUTH_USERNAME_KEY as string) || "auth:username";
-const STAFF_KEY =
-  (process.env.NEXT_PUBLIC_AUTH_IS_STAFF_KEY as string) || "auth:is_staff";
-
 // Utilidad: acceso seguro a localStorage en client-side
 function lsSet(key: string, value: string) {
   try {
@@ -58,16 +56,18 @@ export default function ClientAuthBootstrap() {
       // Sin token → limpiar rastros legacy + limpiar LS y salir
       if (!isAuthenticated()) {
         purgeLegacyAuthArtifacts();
-        lsRemove(USERNAME_KEY);
-        lsRemove(STAFF_KEY);
+        lsRemove(AUTH_USERNAME_KEY);
+        lsRemove(AUTH_IS_STAFF_KEY);
+        notifyAuthListeners();
         return;
       }
 
       // Con token → consultar perfil y sincronizar LS (sin romper si falla)
       try {
         const me = await fetchWhoAmI();
-        if (me?.username) lsSet(USERNAME_KEY, String(me.username));
-        lsSet(STAFF_KEY, me?.is_staff ? "1" : "0");
+        if (me?.username) lsSet(AUTH_USERNAME_KEY, String(me.username));
+        lsSet(AUTH_IS_STAFF_KEY, me?.is_staff ? "1" : "0");
+        notifyAuthListeners();
       } catch {
         // whoami falló: no hacemos nada para no interrumpir la UX
       }
@@ -78,4 +78,3 @@ export default function ClientAuthBootstrap() {
   // No renderiza UI
   return null;
 }
-

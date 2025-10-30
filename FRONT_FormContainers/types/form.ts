@@ -46,9 +46,9 @@ export type Submission = {
   tipo_fase: "entrada" | "salida";
   placa_vehiculo: string | null;
   regulador_id: UUID | null;
-  fecha_creacion: string;      // ISO
+  fecha_creacion: string;
   finalizado: boolean;
-  fecha_cierre: string | null; // ISO
+  fecha_cierre: string | null;
   answers: any[];              // puedes tipar si lo necesitas
 };
 

@@ -2,12 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import {
-  installGlobalAuthFetch,
-  isAuthenticated,
-  fetchWhoAmI,
-  listQuestionnaires,
-} from "@/lib/api.admin";
+import { isAuthenticated, fetchWhoAmI, listQuestionnaires } from "@/lib/api.admin";
 
 /* ========= Tipos ========= */
 type QuestionnaireItem = { id: string; title: string; version: string };
@@ -91,7 +86,6 @@ export default function Home() {
 
   // 1) Bootstrap auth de cliente y whoami
   useEffect(() => {
-    installGlobalAuthFetch(); // añade Authorization: Bearer <token> globalmente
     (async () => {
       if (!isAuthenticated()) {
         setAuthed(false);
