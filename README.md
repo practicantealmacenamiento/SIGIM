@@ -12,7 +12,7 @@ Plataforma interna que integra un backend Django (Clean Architecture) y un front
 ## Estructura del repositorio
 ```
 ROOT/
-|-- BACK_FormContainers/    # Backend Django + Clean Architecture
+|-- BACK_FormContainers/    # Backend Django + Clean Architecture + docs tecnicos
 |-- FRONT_FormContainers/   # Frontend Next.js 15 (App Router)
 `-- README.md               # Guia general (este archivo)
 ```
@@ -103,12 +103,14 @@ Variables clave del frontend (`FRONT_FormContainers/.env.local`):
 - `app/domain`: entidades, reglas y puertos de negocio.
 - `app/application`: servicios y casos de uso que coordinan la capa de dominio.
 - `app/infrastructure`: implementaciones concretas (ORM, Vision, repositorios, storage).
-- `app/interfaces`: vistas DRF, serializers y routers expuestos al exterior.
+- `app/interfaces`: vistas DRF, servicios HTTP reutilizables (`http/services.py`), autenticacion y manejo de excepciones.
 - Frontend estructurado en `src/app` (App Router), `components/` (UI y widgets), `lib/` (clientes HTTP, utilidades) y `types/`.
 
 ## Documentacion
-- Documentacion formal en `BACK_FormContainers/docs/README.md` (requisitos, arquitectura, despliegue y seguridad).
+- Documentacion formal en `BACK_FormContainers/docs/README.md` con enlaces actualizados a descripcion general, requisitos, arquitectura y despliegue (alineado con la reorganizacion 2025).
+- Para detalles de servicios HTTP reutilizables, historial y casos de uso revisa `BACK_FormContainers/docs/01_Descripcion_General.md` y `docs/05_Arquitectura_y_Disenio/Arquitectura_y_Patrones.md`.
 - Esquema interactivo de la API disponible en `/api/v1/docs/` (Swagger) y `/api/v1/redoc/` cuando el backend esta en ejecucion.
+- El frontend mantiene su documentacion funcional en `FRONT_FormContainers/docs/`.
 
 ## Testing y calidad
 - Backend: `pytest` (puede configurarse coverage si se requiere), `python manage.py check` valida dependencias.
