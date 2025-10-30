@@ -100,7 +100,7 @@ CORS_ALLOWED_ORIGINS = env.list(
 
 # Permite IP local (LAN) tipo 192.168.x.x / 10.x.x.x / 172.16-31.x.x en 3000/5173
 CORS_ALLOWED_ORIGIN_REGEXES = [
-    r"^http://((192\.168|10|172\.(1[6-9]|2\d|3[0-1]))\.\d{1,3}\.\d{1,3})(:3000|:5173)?$",
+    r"^http://((192\.168|10|172\.(1[6-9]|2\d|3[0-1]))\.\d{1,3}\.\d{1,3})(:\d+)?$",
 ]
 
 # Asegura Authorization/CSRF
@@ -309,4 +309,3 @@ LOGGING = {
 }
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-

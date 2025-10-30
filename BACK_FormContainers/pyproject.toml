@@ -34,8 +34,7 @@ source_modules = [
     "app.infrastructure.serializers",
     "app.infrastructure.storage",
     "app.infrastructure.vision",
-    "app.infrastructure.permissions",
-    "app.infrastructure.mappers"
+    "app.infrastructure.permissions"
 ]
 forbidden_modules = [
     "app.application",
@@ -67,4 +66,3 @@ layers = [
     "app.infrastructure",
     "app.domain"
 ]
-

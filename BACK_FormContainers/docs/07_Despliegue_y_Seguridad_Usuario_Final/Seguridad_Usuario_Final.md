@@ -1,26 +1,28 @@
 # Requisitos de Seguridad para Usuario Final
 
 ## Proteccion de credenciales
-- El front debe enviar contrasenias exclusivamente mediante HTTPS.
-- Almacenar tokens en memoria (no en localStorage) y usar encabezado `Authorization`.
-- Rotar tokens mediante logout automatico tras 24 horas de inactividad.
+- Consumir siempre la API mediante HTTPS; nunca exponer credenciales por canales inseguros.
+- Almacenar tokens en memoria volátil (state managers, React context) y enviarlos en el header `Authorization: Token/Bearer`.
+- Forzar logout automatico tras 24 h de inactividad o cuando `POST /api/v1/logout` devuelva `200 OK`.
+- Rotar contrasenas segun politicas corporativas y evitar reutilizacion entre sistemas.
 
 ## Manejo de sesion
-- Consumir `whoami` al iniciar la aplicacion para validar vigencia de la sesion.
-- Forzar cierre de sesion en el navegador cuando `POST /api/v1/logout` responda 200.
-- Implementar renovacion de CSRF cuando cambie la cookie `csrftoken`.
+- Ejecutar `GET /api/v1/whoami` al iniciar la aplicacion para validar la sesion y obtener nuevo CSRF.
+- Cuando el backend responda `401 Unauthorized`, limpiar el estado local y redirigir a login.
+- Mantener sincronizadas las cookies `csrftoken` e `is_staff`; si cambian, refrescar permisos en la UI.
 
-## Politicas de datos
-- Mostrar unicamente informacion necesaria en la UI (ej. enmascarar documentos de actores).
-- Informar al usuario cuando se almacene una imagen o documento (cumplimiento de GDPR/LGPD si aplica).
-- Ofrecer mecanismos de correccion de datos en caso de errores (contacto con la mesa de ayuda).
+## Tratamiento de datos
+- Mostrar solo informacion necesaria (placa, contenedor, actores); enmascarar documentos sensibles.
+- Notificar al usuario cuando se sube evidencia (imagen/documento) y obtener consentimiento segun la politica de datos.
+- Implementar mecanismos para corregir o solicitar eliminacion de datos (mesa de ayuda SIGIM).
 
-## Buenas practicas de interfaz
-- Validar campos en el cliente antes de invocar Guardar y Avanzar para reducir reintentos.
-- Integrar capturas de errores del backend en la UI mostrando mensajes amigables.
-- Ofrecer indicadores de carga durante operaciones con archivos u OCR.
+## Interfaz y experiencia segura
+- Validar datos en el cliente antes de enviar Guardar y Avanzar para reducir reintentos.
+- Gestionar errores del backend mostrando mensajes amigables y referencia al `error_id` cuando exista.
+- Proveer indicadores de progreso durante cargas de archivos o verificaciones OCR para evitar abandonos.
+- Consumir archivos protegidos mediante el endpoint `/api/v1/secure-media/` sin exponer rutas directas.
 
-## Cumplimiento normativo
-- Registrar consentimiento del usuario para uso de datos de placa y documentos.
-- Asegurar que los operadores conozcan la politica de privacidad y tratamiento de datos.
-- Disponer de canales de soporte para solicitudes de eliminacion o actualizacion de informacion personal.
+## Cumplimiento y privacidad
+- Mantener registro de consentimiento y finalidades de uso de datos de vehiculos y actores.
+- Alinear mensajes y flujos de la UI con la politica de privacidad corporativa.
+- Disponer de canal de soporte para solicitudes de habeas data (actualizacion o borrado de informacion).

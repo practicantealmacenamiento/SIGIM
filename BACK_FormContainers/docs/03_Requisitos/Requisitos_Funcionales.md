@@ -1,52 +1,54 @@
 # Requisitos Funcionales
 
-Los siguientes requisitos derivan del comportamiento implementado en la capa de interfaces (`app/interfaces`), servicios de aplicacion (`app/application`) y repositorios (`app/infrastructure`).
+Los requisitos se derivan del comportamiento observado en la capa de interfaces (`app/interfaces`), servicios de aplicacion (`app/application`) y adaptadores de infraestructura (`app/infrastructure`).
 
 ## Autenticacion y sesion
-- RF-01: El sistema debe permitir autenticarse usando usuario o correo y devolver un token valido (`UnifiedLoginAPIView`).
-- RF-02: La API debe exponer un endpoint `whoami` que retorne los datos basicos del usuario autenticado.
-- RF-03: Debe existir un endpoint de cierre de sesion que revoque cookies y token (`UnifiedLogoutAPIView`).
-- RF-04: Las vistas privadas (`/api/v1/*`) deben forzar autenticacion mediante `BearerOrTokenAuthentication` o sesion.
+- **RF-01**: Permitir autenticacion por usuario, correo o identificador generico y devolver token valido junto con datos del usuario (`UnifiedLoginAPIView` + `AuthAPIService`).
+- **RF-02**: Exponer `GET /api/v1/whoami` para recuperar el perfil del usuario autenticado y renovar cookies CSRF (`WhoAmIAPIView`).
+- **RF-03**: Proveer `POST /api/v1/logout` que revoque tokens, cierre la sesion y limpie cookies auxiliares (`UnifiedLogoutAPIView`).
+- **RF-04**: Aplicar `BearerOrTokenAuthentication` y `IsAuthenticated` sobre todos los endpoints operativos, reservando `AllowAny` únicamente para login.
 
 ## Gestion de cuestionarios
-- RF-10: Los administradores deben poder crear, consultar, actualizar y eliminar cuestionarios versionados (`AdminQuestionnaireViewSet`).
-- RF-11: Las preguntas deben soportar tipos `text`, `number`, `date`, `choice` y `file`, con orden y ramificacion opcional.
-- RF-12: Cada pregunta puede asociarse a etiquetas semanticas (`semantic_tag`) para aplicar reglas de negocio especiales.
-- RF-13: Se debe validar que al menos una pregunta exista por cuestionario antes de publicarlo (`QuestionnaireService`).
+- **RF-10**: El staff debe crear, editar, listar y eliminar cuestionarios versionados via `AdminQuestionnaireViewSet`, respetando la validacion de campos requerida por `AdminQuestionnaireService`.
+- **RF-11**: Las preguntas deben soportar tipos `text`, `number`, `date`, `choice`, `file`, mantener orden unico dentro del cuestionario y permitir ramificacion mediante `branch_to`.
+- **RF-12**: Cada pregunta puede asociarse a un `semantic_tag` canonico (placa, contenedor, precinto, proveedor, etc.) que active reglas especificas en `QuestionnaireService` y `VerificationService`.
+- **RF-13**: Debe existir al menos una pregunta activa por cuestionario para que el flujo Guardar y Avanzar funcione; de lo contrario `QuestionnaireService` debe lanzar `EntityNotFoundError`.
 
-## Flujo Guardar y Avanzar
-- RF-20: El sistema debe crear submissions vacias segun cuestionario, fase (entrada/salida) y regulador (`SubmissionViewSet.create`).
-- RF-21: El caso de uso `save_and_advance` debe persistir texto, opciones, archivos y metadatos asociados a la pregunta actual.
-- RF-22: Para preguntas con actores (proveedor, transportista, receptor) se debe enlazar el `actor_id` recibido y evitar duplicados.
-- RF-23: La navegacion debe eliminar respuestas posteriores cuando el usuario retrocede y fuerza `force_truncate_future`.
-- RF-24: Al finalizar el flujo, el submission debe marcarse como finalizado y registrar `fecha_cierre` (`SubmissionViewSet.finalize`).
+## Submissions y flujo Guardar y Avanzar
+- **RF-20**: Crear submissions indicando cuestionario, fase (`entrada`, `salida`, `inspeccion`) y opcionalmente `regulador_id`, `placa` y `contenedor` (`SubmissionViewSet.create`).
+- **RF-21**: `GuardarYAvanzarAPIView` debe validar existencia de submission y pregunta, persistir texto, opciones, archivos y metadatos, y retornar `SaveAndAdvanceResult` con la siguiente pregunta.
+- **RF-22**: Cuando la pregunta usa actores (`semantic_tag` proveedor/transportista/receptor) y se envia `actor_id`, la submission debe actualizar los campos correspondientes mediante `save_partial_updates`.
+- **RF-23**: El flujo debe soportar preguntas de proveedor en bloque (`proveedores`), mergeando filas por nombre y orden de compra sin borrar respuestas previas de la misma pregunta.
+- **RF-24**: Con `force_truncate_future=True`, las respuestas posteriores a la pregunta actual deben eliminarse para mantener coherencia en la navegacion.
+- **RF-25**: `SubmissionViewSet.finalize` debe marcar `finalizado=True`, registrar `fecha_cierre` y evitar nuevas respuestas para la submission.
 
 ## Verificacion OCR
-- RF-30: Debe existir un endpoint `/api/v1/verificar` que reciba una imagen y retorne la verificacion segun `semantic_tag`.
-- RF-31: El servicio de verificacion debe soportar placa, contenedor y precinto, devolviendo indicadores `valido` y datos normalizados.
-- RF-32: Si el OCR falla o la imagen es invalida se debe retornar un error manejado de dominio (`VerificationService`).
+- **RF-30**: `POST /api/v1/verificar` debe recibir `question_id` y un archivo de imagen, validar el `semantic_tag` y devolver texto normalizado, valor derivado (placa, contenedor, precinto) y `valido`.
+- **RF-31**: Si la imagen es invalida o el OCR falla se debe emitir una `DomainException` traducida a HTTP por `DomainExceptionTranslator` (`VerificationService`).
+- **RF-32**: El consumo del servicio debe incrementar el contador mensual (`VisionMonthlyUsage`) para auditar el uso contra `VISION_MAX_PER_MONTH`.
 
 ## Catalogos y actores
-- RF-40: Los usuarios autenticados deben poder consultar el catalogo de actores con filtros por tipo, texto y estado (`ActorViewSet`).
-- RF-41: Los roles de staff deben administrar actores mediante CRUD completo (`AdminActorViewSet`).
-- RF-42: Las respuestas deben poder almacenar referencias a actores seleccionados durante el flujo Guardar y Avanzar.
+- **RF-40**: `ActorViewSet` debe listar actores filtrando por tipo, estado y termino de busqueda, limitando resultados segun el parametro `limit`.
+- **RF-41**: `AdminActorViewSet` debe permitir CRUD completo, validando tipo y estado mediante `AdminActorService`.
+- **RF-42**: Las respuestas del flujo deben almacenar referencias a actores (`actor_id`) y sincronizar campos derivados en la entidad `Submission`.
 
-## Submissions y consultas
-- RF-50: Debe existir listado paginado de submissions con filtros por estado, fase, regulador, fechas y placa (`SubmissionViewSet.list`).
-- RF-51: El detalle enriquecido debe incluir answers, archivos y datos derivados (`SubmissionViewSet.enriched_detail`).
-- RF-52: Los usuarios deben acceder al historial por regulador, agrupando fase 1 y fase 2 en un mismo item (`HistorialReguladoresAPIView`).
-- RF-53: El API debe devolver la lista de cuestionarios activos para poblar selectores (`QuestionnaireListAPIView`).
-- RF-54: El detalle de una pregunta debe poder consultarse por identificador (`QuestionDetailAPIView`).
+## Consultas y reportes
+- **RF-50**: `SubmissionViewSet.list` debe admitir filtros por estado (`solo_finalizados`), borradores, fase, actores, rango de fechas, placa y contenedor via `SubmissionAPIService`.
+- **RF-51**: `SubmissionViewSet.enriched_detail` debe retornar la submission, sus answers y archivos relacionados con serializadores de infraestructura.
+- **RF-52**: `HistorialReguladoresAPIView`, a traves de `HistoryAPIService`, debe consolidar fase 1 y 2 usando `HistoryService`, derivando placa desde respuestas cuando no este en la entidad y respetando filtros `fecha_desde`, `fecha_hasta`, `solo_completados`.
+- **RF-53**: `QuestionnaireListAPIView` debe listar cuestionarios y opcionalmente incluir preguntas completas (`include_questions=true`).
+- **RF-54**: `QuestionDetailAPIView` debe permitir recuperar una pregunta especifica por UUID aplicando validaciones de entrada.
 
-## Administracion de usuarios internos
-- RF-60: El personal de staff debe poder listar, crear y actualizar usuarios internos con control de contrasenia (`AdminUserViewSet`).
-- RF-61: La creacion de usuarios debe forzar la generacion de contrasenia cifrada y permitir asignar roles de staff o superusuario.
+## Administracion interna
+- **RF-60**: `AdminUserViewSet` debe permitir listar, crear, editar y eliminar usuarios internos, aplicando cifrado de contrasenia (`make_password`) y control de flags `is_staff`/`is_superuser`.
+- **RF-61**: `AdminQuestionnaireViewSet` debe exponer endpoints documentados para actualizaciones completas (PUT) y parciales (PATCH) manteniendo integridad del orden y ramificacion.
+- **RF-62**: `PrivateSchemaAPIView` y `PrivateSwaggerUIView` deben exponer la documentacion OpenAPI solo a usuarios con `is_staff=True`.
 
 ## Archivos y almacenamiento
-- RF-70: Los archivos cargados deben guardarse en rutas seguras bajo `uploads/YYYY/MM/DD/` (`DjangoDefaultStorageAdapter`).
-- RF-71: Debe existir un endpoint protegido que sirva archivos de media solo a usuarios autenticados (`MediaProtectedAPIView`).
-- RF-72: Al reemplazar o eliminar respuestas con archivos debe intentar borrarse el archivo anterior para evitar residuos.
+- **RF-70**: Las cargas deben almacenarse bajo rutas seguras generadas por `DjangoDefaultStorageAdapter` y referenciarse con path relativo en las entidades `Answer`.
+- **RF-71**: `MediaProtectedAPIView` debe validar la ruta solicitada, impedir traversal (`..`) y verificar existencia antes de servir el archivo.
+- **RF-72**: Al reemplazar un archivo durante `UpdateAnswerCommand`, el almacenamiento debe eliminar el archivo anterior si `delete_old_file_on_replace=True`.
 
-## Documentacion y versionado
-- RF-80: El API debe exponer un esquema OpenAPI privado accesible para personal staff (`PrivateSchemaAPIView`, `PrivateSwaggerUIView`).
-- RF-81: Todas las rutas publicas deben versionarse bajo el prefijo `api/v1/`.
+## Versionado y compatibilidad
+- **RF-80**: Todas las rutas deben mantenerse bajo el prefijo `api/v1/` para garantizar compatibilidad con clientes existentes.
+- **RF-81**: El backend debe publicar el esquema OpenAPI actualizado (`/api/v1/schema`) tras cada cambio relevante y permitir la exploracion interactiva en `/api/v1/docs`.

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Dict, Any, Optional, Type
+from typing import Dict, Any, Type
 
 from rest_framework import status
 from rest_framework.response import Response
@@ -150,14 +150,18 @@ class DomainExceptionTranslator:
         log_level = logging.WARNING if status_code < 500 else logging.ERROR
         logger.log(
             log_level,
-            "Domain exception -> HTTP %(status)s [%(error_id)s]: %(ex_type)s: %(message)s",
+            "Domain exception -> HTTP %s [%s]: %s: %s",
+            status_code,
+            error_id,
+            type(exception).__name__,
+            str(exception),
             extra={
                 "status": status_code,
                 "error_id": error_id,
                 "ex_type": type(exception).__name__,
-                "message": str(exception),
                 "exception_details": getattr(exception, "details", None),
                 "exception_code": getattr(exception, "code", None),
+                "exception_message": str(exception),
             },
             exc_info=(status_code >= 500),  # adjunta traceback sólo en 5xx
         )

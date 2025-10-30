@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Caso de uso principal del flujo de formulario (Guardar y Avanzar).
 
@@ -34,13 +33,13 @@ from app.domain.exceptions import (
     EntityNotFoundError,
     BusinessRuleViolationError,
 )
-from app.domain.repositories import (
+from app.domain.ports.repositories import (
     AnswerRepository,
     SubmissionRepository,
     QuestionRepository,
     ChoiceRepository,
 )
-from app.domain.ports import FileStorage
+from app.domain.ports.external_ports import FileStorage
 
 
 __all__ = ["QuestionnaireService"]

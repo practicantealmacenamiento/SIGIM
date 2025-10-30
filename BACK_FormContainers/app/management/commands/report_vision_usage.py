@@ -1,4 +1,3 @@
-# app/management/commands/report_vision_usage.py
 from django.core.management.base import BaseCommand
 from app.infrastructure.usage_limits import VisionMonthlyUsage
 

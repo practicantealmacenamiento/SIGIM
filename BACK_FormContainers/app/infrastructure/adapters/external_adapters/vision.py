@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Optional, Iterable, List, Dict, Any
 
-from app.domain.ports import TextExtractorPort, ExtractionMode, ExtractionResult
+from app.domain.ports.external_ports import TextExtractorPort, ExtractionMode, ExtractionResult
 from app.domain.exceptions import ExtractionError, InvalidImageError
 
 # ========================== NUEVO: imports cuota mensual ==========================

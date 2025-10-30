@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 import re  # reservado por si se requieren patrones adicionales
 
-from app.domain.ports import ExtractionMode, ExtractionResult, TextExtractorPort
+from app.domain.ports.external_ports import ExtractionMode, ExtractionResult, TextExtractorPort
 from app.domain.exceptions import ExtractionError, InvalidImageError
 
 __all__ = ["MockTextExtractor", "DevelopmentTextExtractor"]

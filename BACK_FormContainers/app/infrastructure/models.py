@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Modelos de infraestructura (Django ORM).
 

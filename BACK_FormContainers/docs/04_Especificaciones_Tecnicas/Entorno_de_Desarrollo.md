@@ -2,46 +2,55 @@
 
 ## Requisitos minimos
 - Sistema operativo: Windows 10+, macOS 12+ o cualquier distribucion Linux con soporte Docker.
-- Python 3.12.8 (segun `Dockerfile`) y `pip` actualizado.
-- Git 2.40+ para gestionar el repositorio.
-- Redis 7 (opcional) cuando se ejecuten tareas Celery en local.
-- Credenciales de Google Cloud Vision (opcional) para ejercicios de OCR en entorno de pruebas.
+- Python 3.12.x y `pip` actualizado (alineado con el `Dockerfile`).
+- Git 2.40+ para gestionar el repositorio y ramas de trabajo.
+- Redis 7 (opcional) cuando se prueben tareas Celery o throttling basado en colas.
+- Credenciales de Google Cloud Vision (opcional) para emular OCR real; en su ausencia se usa el mock integrado.
 
-## Entorno virtual recomendado
+## Configuracion local
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## Archivos de configuracion
-- Crear un archivo `.env` en `BACK_FormContainers/` tomando como referencia `.env.sqlserver` o el ejemplo del repo.
-- Variables clave:
-  - `DEBUG`, `SECRET_KEY`, `ALLOWED_HOSTS`.
-  - `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS` para habilitar el frontend local.
-  - `GOOGLE_APPLICATION_CREDENTIALS` (ruta al JSON de Vision).
-  - `API_SECRET_TOKEN` si se integran servicios externos.
-- Para Celery, configurar `CELERY_BROKER` y `CELERY_BACKEND` (por defecto Redis en `core/settings.py`).
+### Archivo `.env`
+Crear `BACK_FormContainers/.env` tomando como referencia los ejemplos del repositorio. Variables destacadas:
+- `DEBUG`, `SECRET_KEY`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`.
+- `DATABASE_URL` o variables `DB_*` para usar SQL Server; si se omite se activa SQLite (`dbtest.sqlite3`).
+- `GOOGLE_APPLICATION_CREDENTIALS`: ruta al JSON del servicio de Vision.
+- `USE_MOCK_OCR=1`: fuerza el uso del mock `DevelopmentTextExtractor`.
+- `VISION_MAX_PER_MONTH`: limite mensual de verificaciones OCR (por defecto 1999).
+- `API_SECRET_TOKEN`: token para integraciones de escritura (si se usa `TokenRequiredForWrite`).
+- `CELERY_BROKER`, `CELERY_BACKEND`: direccion de Redis cuando se ejecuta Celery.
 
-## Dependencias principales
-- Django 5.2 y Django REST Framework 3.16.
-- drf-spectacular 0.28 para documentacion OpenAPI.
-- django-cors-headers y django-environ para configuraciones.
-- Celery 5.5 y Redis 7 para procesamiento asincrono.
+### Servicios Docker
+`docker-compose.yml` incluye servicios de referencia:
+- `django`: aplica migraciones y expone `http://localhost:8000`.
+- `celery`: worker opcional enlazado a Redis.
+- `redis`: instancia local para mensajeria y throttling.
 
-## Servicios Docker
-El archivo `docker-compose.yml` define:
-- `redis`: contenedor base para colas.
-- `django`: ejecuta `python manage.py runserver` con el codigo montado en caliente.
-- `celery`: dispara un worker enlazado al mismo codigo.
-
-Para levantar el stack:
+Para levantar el entorno:
 ```bash
 docker compose up --build
 ```
 
-## Herramientas adicionales
-- import-linter: valida la disciplina de importaciones de la arquitectura limpia (`pyproject.toml`).
-- pytest: ejecutar pruebas unitarias con `pytest`.
-- drf-spectacular: generar esquema via `python manage.py spectacular --color --file schema.yml`.
+## Dependencias principales
+- Django 5.2, Django REST Framework 3.16, drf-spectacular 0.28, django-cors-headers, django-environ.
+- Celery 5.5 (opcional), Redis 7, pytest 8.3, import-linter.
+- Adaptadores propios para OCR (`TextExtractorAdapter`) y almacenamiento (`DjangoDefaultStorageAdapter`).
+
+## Comandos utiles
+- `python manage.py migrate` — aplica migraciones.
+- `python manage.py createsuperuser` — crea usuario administrativo.
+- `python manage.py spectacular --color --file schema.yml` — regenera el esquema OpenAPI.
+- `python manage.py report_vision_usage` — consulta el contador mensual de OCR.
+- `pytest` — ejecuta pruebas unitarias e integracion.
+- `import-linter --config pyproject.toml` — valida los contratos de arquitectura.
+
+## Buenas practicas en desarrollo
+- Ejecutar `pytest` y `python manage.py check` antes de subir cambios.
+- Regenerar el esquema OpenAPI al modificar vistas o serializadores.
+- Usar el mock OCR por defecto y habilitar Vision real solo cuando sea necesario, evitando consumir la cuota de `VISION_MAX_PER_MONTH`.
+- Mantener el repositorio limpio (sin archivos generados en `media/` o `staticfiles`) antes de crear un commit.

@@ -1,11 +1,8 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
 from rest_framework import serializers
-
-from app.domain.rules import normalizar_placa as _norm_placa
 
 # Sentinela de módulo para evitar problemas de alcance en validate()
 _UNSET = object()
@@ -133,12 +130,20 @@ class AnswerReadSerializer(SafeGetMixin, serializers.Serializer):
     def get_question(self, obj):
         q = self._get(obj, "question")
         if q:
-            return {"id": str(getattr(q, "id", None)), "text": getattr(q, "text", ""),
-                    "type": getattr(q, "type", ""), "semantic_tag": getattr(q, "semantic_tag", None)}
+            return {
+                "id": str(getattr(q, "id", None)),
+                "text": getattr(q, "text", ""),
+                "type": getattr(q, "type", ""),
+                "semantic_tag": getattr(q, "semantic_tag", None),
+            }
         qid = self._get(obj, "question_id")
         m = self.context.get("questions_data", {}).get(str(qid), {}) if qid else {}
-        return {"id": str(qid) if qid else None, "text": m.get("text", ""), "type": m.get("type", ""),
-                "semantic_tag": m.get("semantic_tag")}
+        return {
+            "id": str(qid) if qid else None,
+            "text": m.get("text", ""),
+            "type": m.get("type", ""),
+            "semantic_tag": m.get("semantic_tag"),
+        }
 
     def get_answer_choice(self, obj):
         c = self._get(obj, "answer_choice")
@@ -372,29 +377,24 @@ class SubmissionModelSerializer(SafeGetMixin, serializers.Serializer):
     answers = serializers.SerializerMethodField()
 
     def get_placa_vehiculo(self, obj) -> Optional[str]:
+        """
+        La derivación/normalización de placa es responsabilidad de la capa de aplicación.
+        Aquí solo:
+        - devolvemos el valor directo del modelo, o
+        - leemos un override precomputado en el contexto.
+        Context keys soportadas:
+          - "placa_vehiculo_map": { "<submission_id>": "<placa>" }
+          - "placa_vehiculo": "<placa>"  (fallback global)
+        """
         direct = self._get(obj, "placa_vehiculo")
         if direct:
-            p = _norm_placa(direct)
-            if p and p != "NO_DETECTADA":
-                return p
+            return direct
         sid = self._get(obj, "id")
-        for a in reversed(self.context.get("answers_data", {}).get(str(sid), [])):
-            t = (a.get("answer_text") or "").strip()
-            if not t:
-                continue
-            q = a.get("question") or {}
-            if q.get("semantic_tag") == "placa":
-                p = _norm_placa(t)
-                if p != "NO_DETECTADA":
-                    return p
-        for a in reversed(self.context.get("answers_data", {}).get(str(sid), [])):
-            t = (a.get("answer_text") or "").strip()
-            if not t:
-                continue
-            p = _norm_placa(t)
-            if p != "NO_DETECTADA":
-                return p
-        return None
+        if sid:
+            by_map = (self.context.get("placa_vehiculo_map") or {}).get(str(sid))
+            if by_map:
+                return by_map
+        return self.context.get("placa_vehiculo")
 
     def get_proveedor_id(self, obj):      return self._get(obj, "proveedor_id") or self._rel_id(obj, "proveedor")
     def get_transportista_id(self, obj):  return self._get(obj, "transportista_id") or self._rel_id(obj, "transportista")

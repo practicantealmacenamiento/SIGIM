@@ -1,36 +1,38 @@
 # Plan de Seguridad Tecnica
 
 ## Controles de acceso
-- Autenticacion mediante token (header `Authorization: Bearer/Token`) o cookies de sesion con CSRF (`BearerOrTokenAuthentication`).
-- Endpoints administrativos bajo `IsAdminUser` y rutas `api/v1/management/*`.
-- Documentacion privada (`/api/schema`, `/api/docs`) disponible solo para usuarios staff autenticados.
+- Autenticacion unificada mediante tokens DRF o cookies de sesion; las vistas aplican `BearerOrTokenAuthentication` y `IsAuthenticated`.
+- Rutas administrativas (`/api/v1/management/*`, `/api/v1/schema`, `/api/v1/docs`) protegidas con `IsAdminUser`.
+- Integraciones de sistema a sistema pueden exigir `TokenRequiredForWrite` (header `Authorization: Bearer` o `X-API-KEY`), configurable via `API_SECRET_TOKEN`.
 
 ## Proteccion de datos
-- Campos sensibles (contrasenias) se cifran con `make_password` al crear usuarios administrativos (`AdminUserViewSet`).
-- Archivos cargados se almacenan con nombres aleatorios (`uuid4`) evitando colisiones y exponiendo solo rutas relativas.
-- Validacion estricta de rutas en `MediaProtectedAPIView` para prevenir path traversal.
+- Contrasenas cifradas con make_password (AdminUserService) y politicas de rotacion documentadas por TI.
+- Archivos guardados con nombres aleatorios y rutas normalizadas (`DjangoDefaultStorageAdapter`), evitando exposicion directa del sistema de archivos.
+- `MediaProtectedAPIView` valida rutas (`..`, backslashes) antes de servir archivos y usa `FileResponse` solo para usuarios autenticados.
+- Campos sensibles (documentos, tokens) se enmascaran en logs y respuestas.
 
 ## Comunicacion segura
-- Configurar HTTPS en todos los entornos productivos; habilitar `CSRF_COOKIE_SECURE`, `SESSION_COOKIE_SECURE`, `SECURE_PROXY_SSL_HEADER`.
-- Mantener `ALLOWED_HOSTS` y `CORS_ALLOWED_ORIGINS` sincronizados con los dominios oficiales.
-- Para despliegues detras de proxy, propagar cabeceras `X-Forwarded-Proto` y `X-Forwarded-For`.
+- Habilitar HTTPS en todos los entornos productivos y configurar `SECURE_PROXY_SSL_HEADER`, `CSRF_COOKIE_SECURE`, `SESSION_COOKIE_SECURE`, `SECURE_HSTS_SECONDS`.
+- Restricciones CORS y CSRF basadas en listas blancas (`CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`), permitiendo solo dominios autorizados.
+- Limitar `ALLOWED_HOSTS` al dominio oficial y direcciones internas necesarias.
 
 ## Gestion de secretos
-- Usar `.env` gestionado por la plataforma de despliegue (Vault, AWS SSM, Azure Key Vault).
-- Rotar `SECRET_KEY` y tokens de API de forma periodica y documentar el proceso en el runbook de soporte.
-- No almacenar credenciales OCR ni claves de base de datos en archivos versionados.
+- Variables de entorno administradas por la plataforma (Vault, AWS SSM, Azure Key Vault). Nunca versionar credenciales en el repositorio.
+- Rotar periodicamente `SECRET_KEY`, tokens de servicio y credenciales de Vision, manteniendo bitacora de cambios.
+- Asegurar que el archivo de credenciales de Google Vision tenga permisos restringidos y no se monte en repositorios compartidos.
 
-## Seguridad de archivos
-- Validar tipo MIME y tamano de archivos en `GuardarYAvanzar` y `GuardarRespuestaSerializer`.
-- Limitar a 32 MB el tamano maximo de subida (`DATA_UPLOAD_MAX_MEMORY_SIZE`).
-- Considerar antivirus o scanner externo si se habilitan formatos adicionales.
+## Seguridad de archivos y payloads
+- Limitar uploads a 32 MB (`DATA_UPLOAD_MAX_MEMORY_SIZE`) y validar tipo MIME mediante `SaveAndAdvanceInputSerializer`.
+- Eliminar archivos al borrar respuestas (`Answer.delete`) o reemplazarlos (flag `delete_old_file_on_replace`).
+- Considerar antivirus o escaneo externo cuando se habiliten adjuntos proveniente de terceros.
 
-## Hardening de dependencias
-- Revisar vulnerabilidades con `pip-audit` o `safety` mensualmente.
-- Mantener Docker base `python:3.12-alpine` actualizada con parches de seguridad.
-- Ejecutar `python manage.py check --deploy` antes de cada liberacion para detectar configuraciones inseguras.
+## Hardening y auditoria
+- Ejecutar `python manage.py check --deploy` antes de liberar a produccion.
+- Revisar vulnerabilidades con `pip-audit` o `safety` al menos una vez por mes.
+- Registrar eventos criticos con `error_id` usando `DomainExceptionTranslator` para facilitar investigacion forense.
+- Monitorear el contador `VisionMonthlyUsage` para detectar uso anomalo del servicio OCR y prevenir abuso.
 
-## Auditoria y trazabilidad
-- Registrar eventos de login/logout y cambios administrativos.
-- Mantener historial de submissions con timestamps para auditoria forense.
-- En caso de incidentes, utilizar logs centralizados y respaldos de base de datos cifrados.
+## Respuesta ante incidentes
+- Contar con procedimientos de revocacion rapida de tokens y desactivacion de cuentas.
+- Mantener respaldos cifrados de base de datos y archivos, listos para restauracion.
+- Documentar postmortems e incorporar acciones preventivas al plan de soporte.

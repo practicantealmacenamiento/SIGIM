@@ -33,7 +33,7 @@ from django.core.files.storage import Storage, default_storage
 from django.urls import reverse
 
 # ---- Dominio
-from app.domain.ports import FileStorage
+from app.domain.ports.external_ports import FileStorage
 from app.domain.exceptions import FileStorageError, InvalidFileError
 
 

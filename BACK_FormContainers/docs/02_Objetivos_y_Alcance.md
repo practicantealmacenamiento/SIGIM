@@ -1,32 +1,32 @@
 # Objetivos y Alcance
 
 ## Objetivo general
-Entregar una plataforma backend confiable que permita gestionar formularios logisticos de entrada y salida de vehiculos, garantizando la captura estructurada de datos, la validacion automatica mediante OCR y la trazabilidad de actores y evidencias.
+Entregar y mantener un backend robusto para SIGIM que permita registrar, validar y auditar el ingreso de mercancia, asegurando integridad de datos, control de evidencias y trazabilidad completa de actores involucrados.
 
 ## Objetivos especificos
-- Centralizar el flujo de autenticacion y autorizacion para usuarios operativos y personal administrativo.
-- Administrar cuestionarios versionados que puedan ajustarse sin modificar el codigo fuente.
-- Permitir el guardado progresivo de respuestas, con control de navegacion y reglas de negocio por tipo de pregunta.
-- Mantener un repositorio historico por regulador, separando fases de entrada y salida para auditoria.
-- Integrar servicios OCR a traves de puertos desacoplados para validar campos criticos.
-- Facilitar la administracion de catalogos maestros de actores desde endpoints protegidos.
+- Consolidar autenticacion, autorizacion y session management bajo endpoints REST versionados.
+- Permitir la configuracion dinamica de cuestionarios y su ejecucion guiada (Guardar y Avanzar) sin modificar el nucleo de dominio.
+- Proveer verificaciones OCR desacopladas que normalicen placas, contenedores y precintos, con seguimiento mensual de consumo (`VisionMonthlyUsage`).
+- Facilitar la administracion de catalogos maestros (actores, usuarios, cuestionarios) mediante servicios dedicados para personal staff.
+- Generar historiales por regulador y fase, derivando datos criticos desde respuestas cuando la entidad no los conserva explicitamente y exponiendolos de forma unificada para el frontend.
+- Centralizar la traduccion entre vistas DRF y casos de uso mediante los servicios HTTP (`app/interfaces/http/services.py`), reduciendo duplicidad de validaciones.
+- Exponer evidencias y archivos solo a usuarios autenticados mediante endpoints protegidos.
 
 ## Alcance funcional
-- Servicios REST autenticados bajo prefijo `api/v1/`.
-- Endpoints para login unificado, verificacion OCR y flujo Guardar y Avanzar.
-- CRUD de submissions, incluyendo detalle enriquecido y finalizacion.
-- Consultas de historiales y listas resumidas de cuestionarios y actores.
-- Gestion administrativa de usuarios internos, cuestionarios y catalogos.
-- Publicacion controlada de archivos asociados a respuestas.
+- API REST autenticada bajo `api/v1/` con autenticacion unificada (token y sesion) y documentacion via drf-spectacular.
+- Flujos de cuestionario: obtencion de la primera pregunta, Guardar y Avanzar, finalizacion de submissions y detalle enriquecido con respuestas.
+- Servicios de verificacion OCR que enrutan automaticamente segun el `semantic_tag` de la pregunta.
+- Listados de historial, catalogo de actores, administracion de cuestionarios, usuarios internos y actores por medio de servicios HTTP reutilizables.
+- Reporte del uso mensual de OCR mediante comando `python manage.py report_vision_usage`.
 
 ## Fuera de alcance
-- Interfaces graficas de usuario (frontend) y operacion offline.
-- Motor de reportes avanzados o BI fuera del historial expuesto.
-- Provision automatica de infraestructura cloud o pipelines CI/CD.
-- Migraciones automaticas a motores de base de datos distintos de los configurados.
+- Interfaces graficas de usuario y experiencias offline (se atienden en el frontend).
+- Reporteria avanzada o tableros BI fuera de los endpoints disponibles.
+- Automatizacion de infraestructura cloud o pipelines CI/CD (requiere herramientas externas).
+- Gestion de integraciones propietarias adicionales (e.g. ERP, WMS) que no usen los contratos existentes.
 
 ## Indicadores de exito
-- Cobertura completa de los flujos descritos en los requisitos funcionales.
-- Tiempos de respuesta inferiores a dos segundos para operaciones CRUD tipicas sobre submissions.
-- Capacidad de incorporar nuevos cuestionarios o preguntas sin alterar la capa de dominio.
-- Trazabilidad de archivos y respuestas verificada mediante logs y endpoints de detalle.
+- Ejecucion satisfactoria de los requisitos funcionales y pruebas automatizadas (`pytest`, `import-linter`).
+- Latencia promedio inferior a dos segundos en operaciones CRUD de submissions y verificacion OCR menor a tres segundos bajo carga nominal.
+- Capacidad de publicar cambios en cuestionarios o reglas de negocio sin alterar capas inferiores del diseño.
+- Seguimiento consistente del consumo OCR frente al limite `VISION_MAX_PER_MONTH` y ausencia de archivos huerfanos en almacenamiento.

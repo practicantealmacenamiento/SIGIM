@@ -511,7 +511,7 @@ class TestAnswer(unittest.TestCase):
                 # Sin answer_text, answer_choice_id, ni answer_file_path
             )
         
-        self.assertIn("respuesta debe contener texto, una opción o un archivo", str(context.exception))
+        self.assertIn("texto, una opción, un archivo o metadatos", str(context.exception))
 
     def test_text_normalization(self):
         """Debe normalizar el texto de la respuesta."""
@@ -581,22 +581,21 @@ class TestAnswer(unittest.TestCase):
         self.assertEqual(original.answer_file_path, "/original/path.jpg")
         self.assertEqual(updated.answer_file_path, "/new/path.jpg")
 
-    def test_with_ocr_meta_immutable_update(self):
-        """Debe crear nueva instancia con metadatos OCR actualizados."""
-        original = Answer.create_new(
+    def test_set_ocr_meta_updates_in_place(self):
+        """Debe reemplazar metadatos OCR con set_ocr_meta."""
+        answer = Answer.create_new(
             submission_id=uuid4(),
             question_id=uuid4(),
             answer_text="Texto con OCR",
             ocr_meta={"confidence": 0.8}
         )
         
-        updated = original.with_ocr_meta({"confidence": 0.9, "language": "es"})
+        answer.set_ocr_meta({"confidence": 0.9, "language": "es"})
         
-        self.assertEqual(original.ocr_meta, {"confidence": 0.8})
-        self.assertEqual(updated.ocr_meta, {"confidence": 0.9, "language": "es"})
+        self.assertEqual(answer.ocr_meta, {"confidence": 0.9, "language": "es"})
 
     def test_has_ocr_data(self):
-        """Debe detectar si tiene datos de OCR."""
+        """Debe detectar si tiene datos de OCR mediante ocr_meta."""
         answer_without_ocr = Answer.create_new(
             submission_id=uuid4(),
             question_id=uuid4(),
@@ -610,8 +609,8 @@ class TestAnswer(unittest.TestCase):
             ocr_meta={"confidence": 0.9}
         )
         
-        self.assertFalse(answer_without_ocr.has_ocr_data())
-        self.assertTrue(answer_with_ocr.has_ocr_data())
+        self.assertEqual(answer_without_ocr.ocr_meta, {})
+        self.assertTrue(bool(answer_with_ocr.ocr_meta))
 
     def test_get_display_value(self):
         """Debe retornar valor apropiado para mostrar."""

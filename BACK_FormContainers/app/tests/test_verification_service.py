@@ -14,8 +14,8 @@ from uuid import uuid4
 from typing import Dict
 
 from app.application.verification import VerificationService
-from app.domain.ports import TextExtractorPort
-from app.domain.repositories import QuestionRepository
+from app.domain.ports.external_ports import TextExtractorPort
+from app.domain.ports.repositories import QuestionRepository
 from app.domain.entities import Question
 from app.domain.exceptions import (
     BusinessRuleViolationError,

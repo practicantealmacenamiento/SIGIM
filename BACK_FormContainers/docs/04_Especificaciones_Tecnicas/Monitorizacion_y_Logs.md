@@ -1,33 +1,35 @@
 # Monitorizacion y Logs
 
-## Configuracion actual
-- `core/settings.py` define un manejador `logging.StreamHandler` que envia eventos a la salida estandar.
-- En desarrollo, `DEBUG=True` establece nivel `DEBUG` para el logger raiz y `INFO` para `django.request`.
-- En produccion se recomienda fijar `DEBUG=False`, establecer nivel `INFO` o `WARNING` y redirigir la salida a un agregador (CloudWatch, Stackdriver, ELK).
+## Configuracion base
+- `core/settings.py` define logging estructurado con handler `console` y nivel `DEBUG` en desarrollo, `INFO` en produccion.
+- `DomainExceptionMiddleware` y `DomainExceptionTranslator` registran cada excepcion de dominio con `error_id` y metadata (`logger=app.interfaces.exception_handlers`).
+- DRF utiliza `DEFAULT_SCHEMA_CLASS=drf_spectacular`, permitiendo explorar la API y validar respuestas en `/api/v1/docs`.
 
 ## Eventos criticos a registrar
-- Intentos de autenticacion fallidos y exitos (nivel `INFO`).
-- Errores de OCR capturados por `DomainExceptionTranslator` (`ExtractionError`, `InvalidImageError`) con nivel `WARNING`.
-- Creacion, finalizacion y edicion de submissions (nivel `INFO`) incluyendo `submission_id`, `user_id` y `regulador_id`.
-- Excepciones no controladas (nivel `ERROR`) con stacktrace completo.
+- Intentos de autenticacion (exitosos y fallidos) y cambios de rol en usuarios administrados.
+- Creacion y finalizacion de submissions, incluyendo `submission_id`, `regulador_id`, `tipo_fase` y `created_by`.
+- Errores en Guardar y Avanzar (validaciones, reglas de negocio, excepciones de infraestructura).
+- Fallas de OCR (`ExtractionError`, `InvalidImageError`), indicando proveedor utilizado (Vision o mock) y `error_id`.
+- Llamados a tareas administrativas (`report_vision_usage`, limpieza de archivos) y resultado.
 
-## Recoleccion y retencion
-- Al desplegar en contenedores, utilizar drivers de logs (`json-file`, `awslogs`, `gcp`) para centralizar eventos.
-- Definir politica de retencion minima de 90 dias para auditorias y trazabilidad logistica.
-- Para almacenamiento en archivos, habilitar `logging.handlers.RotatingFileHandler` con compresion semanal.
+## Fuentes de datos
+- **Logs de aplicacion**: `docker logs`, CloudWatch, Stackdriver o plataforma equivalente.
+- **Base de datos**: tablas `VisionMonthlyUsage`, `Submission`, `Answer` y `Actor` para auditoria cruzada.
+- **Metrica OCR**: salida del comando `python manage.py report_vision_usage --year YYYY --month MM`.
 
 ## Monitoreo proactivo
-- Configurar health checks sobre `GET /api/v1/whoami` y `/api/v1/cuestionario/primera/?questionnaire_id=...`.
-- Medir tiempos de respuesta y tasa de errores (HTTP 5xx) mediante APM (New Relic, Datadog) o Prometheus/Nginx metrics.
-- Supervisar el tamaño de la carpeta `media/` para anticipar necesidades de almacenamiento.
-- Activar alertas cuando se registren mas de X `ExtractionError` en una hora, indicando problemas con el proveedor OCR.
+- Health checks cada 60 s sobre `GET /api/v1/whoami` (autenticado) y `GET /api/v1/cuestionarios/`.
+- Alertas por tasa de errores HTTP >= 5xx o latencias superiores a 2 s en Guardar y Avanzar.
+- Seguimiento del crecimiento de la carpeta `media/` y correlacion con respuestas almacenadas.
+- Alarmas cuando `VisionMonthlyUsage.count` se acerque al 80% de `VISION_MAX_PER_MONTH`.
 
-## Dashboards sugeridos
-- Graficas de submissions creadas/finalizadas por dia y por regulador.
-- Conteo de errores 4xx/5xx por endpoint.
-- Uso de OCR (cantidad de llamadas y porcentaje de exito vs fallo).
+## Tableros sugeridos
+- Submissions creadas/finalizadas por dia, fase y regulador.
+- Conteo de errores 4xx/5xx por endpoint y tipo de excepcion de dominio.
+- Consumo OCR mensual (Vision vs mock) y porcentaje de fallos.
+- Top 10 de preguntas que generan mas validaciones fallidas o truncamientos.
 
 ## Buenas practicas
-- Enmascarar datos sensibles antes de registrarlos (no loguear contrasenias, tokens ni documentos completos).
-- Adjuntar `request_id` o `trace_id` en cabeceras para correlacionar eventos entre servicios.
-- Automatizar pruebas de logging con escenarios controlados (ejecutar `pytest` verificando que los handlers se configuran correctamente).
+- Enmascarar datos sensibles (documento, token) antes de escribir en logs.
+- Incluir `request_id` o `X-Request-ID` en peticiones para correlacionar eventos.
+- Automatizar revisiones de logs tras despliegues y documentar hallazgos relevantes en el plan de soporte.

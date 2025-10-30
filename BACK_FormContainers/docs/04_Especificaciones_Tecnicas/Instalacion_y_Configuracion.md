@@ -1,50 +1,60 @@
 # Instalacion y Configuracion
 
-## Paso 1. Clonar el repositorio
+## 1. Clonar el repositorio
 ```bash
 git clone <url-del-repositorio>
 cd BACK_FormContainers
 ```
 
-## Paso 2. Configurar variables de entorno
-- Copiar `.env` de ejemplo o crear uno nuevo.
-- Ajustar `DEBUG`, `SECRET_KEY`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`.
-- Definir credenciales OCR si se usara Google Vision.
-- En ambientes productivos, desactivar `DEBUG` y ajustar `CSRF_COOKIE_SECURE`, `SESSION_COOKIE_SECURE`.
+## 2. Preparar variables de entorno
+1. Crear `./.env` a partir de un archivo de ejemplo.
+2. Definir:
+   - `DEBUG`, `SECRET_KEY`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`.
+   - Configuracion de base de datos (`DATABASE_URL` o `DB_ENGINE`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`).
+   - Credenciales OCR (`GOOGLE_APPLICATION_CREDENTIALS`) o banderas `USE_MOCK_OCR`, `GCV_DISABLED`.
+   - `VISION_MAX_PER_MONTH` y `API_SECRET_TOKEN` si aplica.
+   - `CELERY_BROKER` y `CELERY_BACKEND` cuando se ejecute Celery.
 
-## Paso 3. Instalar dependencias
+## 3. Instalar dependencias
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## Paso 4. Aplicar migraciones
+## 4. Migraciones y datos iniciales
 ```bash
 python manage.py migrate
+python manage.py createsuperuser    # Usuario administrativo
 ```
+> Opcional: cargar fixtures especificas del proyecto si existen (`python manage.py loaddata <fixture.json>`).
 
-Si se requiere data base de prueba, se puede cargar `forms_export.json` mediante un comando de gestion propio o scripts de carga (no incluido por defecto).
-
-## Paso 5. Crear usuario administrativo
-```bash
-python manage.py createsuperuser
-```
-
-## Paso 6. Ejecutar el servidor de desarrollo
+## 5. Ejecutar servicios de desarrollo
 ```bash
 python manage.py runserver 0.0.0.0:8000
 ```
 
-## Ejecucion con Docker
+### Ejecucion con Docker
 ```bash
 docker compose up --build
 ```
-- El servicio `django` expone `http://localhost:8000`.
-- El worker `celery` queda escuchando tareas si se usan colas.
+- `django`: expone `http://localhost:8000`.
+- `celery`: worker opcional para tareas asincronas.
+- `redis`: soporte para colas/locks.
 
-## Tareas posteriores
-- Regenerar el esquema con `python manage.py spectacular --color --file schema.yml` cuando cambien las vistas.
-- Ejecutar `pytest` antes de desplegar cambios.
-- Configurar almacenamiento de archivos (S3, GCS, Azure) adaptando `DjangoDefaultStorageAdapter` si es necesario.
+## 6. Verificaciones posteriores
+- `python manage.py check`: valida configuracion de Django.
+- `pytest`: ejecuta pruebas unitarias.
+- `python manage.py spectacular --color --file schema.yml`: regenera el esquema OpenAPI.
+- `python manage.py report_vision_usage`: corrobora que el contador OCR este operativo.
+- `import-linter --config pyproject.toml`: valida contratos de arquitectura.
+
+## 7. Configuracion de almacenamiento
+- Desarrollo: `DjangoDefaultStorageAdapter` utiliza el filesystem local (`media/`).
+- Produccion: ajustar `DEFAULT_FILE_STORAGE` o reemplazar el adaptador para apuntar a S3, GCS o Azure Blob. Mantener rutas relativas para compatibilidad con `MediaProtectedAPIView`.
+
+## 8. Consideraciones para despliegue
+- Establecer `DEBUG=False`, `SECURE_PROXY_SSL_HEADER`, `CSRF_COOKIE_SECURE`, `SESSION_COOKIE_SECURE` y `ALLOWED_HOSTS` apropiados.
+- Ejecutar `python manage.py collectstatic --noinput` si se sirven archivos estaticos desde Django.
+- Configurar monitoreo de `VisionMonthlyUsage` para anticipar limites de OCR.

@@ -15,12 +15,12 @@ from datetime import datetime, timezone
 from uuid import uuid4, UUID
 from typing import Optional, List
 
-from app.application.services import AnswerService, SubmissionService, HistoryService
+from app.application.services.services import AnswerService, SubmissionService, HistoryService
 from app.application.commands import CreateAnswerCommand, UpdateAnswerCommand, UNSET
 from app.domain.entities import Answer, Submission, Question, Choice
 from app.domain.exceptions import EntityNotFoundError, ValidationError, DomainException
-from app.domain.repositories import AnswerRepository, SubmissionRepository, QuestionRepository
-from app.domain.ports import FileStorage
+from app.domain.ports.repositories import AnswerRepository, SubmissionRepository, QuestionRepository
+from app.domain.ports.external_ports import FileStorage
 
 
 class TestAnswerService(unittest.TestCase):
@@ -78,7 +78,7 @@ class TestAnswerService(unittest.TestCase):
         cmd = CreateAnswerCommand(
             submission_id=submission_id,
             question_id=question_id,
-            upload=mock_upload
+            answer_file=mock_upload
         )
         
         self.mock_storage.save.return_value = "uploads/2024/01/15/file.jpg"
@@ -136,17 +136,16 @@ class TestAnswerService(unittest.TestCase):
         
         self.mock_repo.get.return_value = existing_answer
         
-        # Mock the update_text method (since Answer is immutable, we need to mock this)
         updated_answer = existing_answer.with_text("Texto actualizado")
-        
-        # We need to mock the entity's update methods since they don't exist
-        # Instead, we'll verify the service calls save with the right data
         self.mock_repo.save.return_value = updated_answer
-        
-        # Act & Assert - This will fail because Answer doesn't have update_text method
-        # Let's modify the test to work with the actual immutable Answer entity
-        with self.assertRaises(AttributeError):
-            self.service.update_answer(cmd)
+
+        # Act
+        result = self.service.update_answer(cmd)
+
+        # Assert
+        self.assertEqual(existing_answer.answer_text, "Texto actualizado")
+        self.mock_repo.save.assert_called_once_with(existing_answer)
+        self.assertEqual(result, updated_answer)
 
     def test_update_answer_not_found(self):
         """Debe lanzar EntityNotFoundError si la respuesta no existe."""
@@ -223,7 +222,7 @@ class TestAnswerService(unittest.TestCase):
             mock_now = datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
             mock_datetime.now.return_value = mock_now
             
-            result = self.service._store_upload(mock_upload)
+            result = self.service._store_answer_file(mock_upload)
         
         # Assert
         expected_folder = os.path.join("uploads", "2024", "01", "15")
@@ -254,6 +253,7 @@ class TestSubmissionService(unittest.TestCase):
         # Arrange
         submission_id = uuid4()
         mock_submission = Mock()
+        mock_submission.finalizado = False
         mock_submission.placa_vehiculo = None  # Sin placa inicial
         
         self.mock_submission_repo.get.return_value = mock_submission
@@ -310,6 +310,7 @@ class TestSubmissionService(unittest.TestCase):
         # Arrange
         submission_id = uuid4()
         mock_submission = Mock()
+        mock_submission.finalizado = False
         mock_submission.placa_vehiculo = "XYZ789"  # Ya tiene placa
         
         self.mock_submission_repo.get.return_value = mock_submission
@@ -390,7 +391,7 @@ class TestSubmissionService(unittest.TestCase):
         
         self.mock_submission_repo.get.return_value = mock_submission
         self.mock_answer_repo.list_by_submission.return_value = mock_answers
-        self.mock_question_repo.get_by_ids = Mock(return_value=mock_questions)
+        self.mock_question_repo.list_by_ids.return_value = mock_questions
         
         # Act
         result = self.service.get_detail(submission_id)

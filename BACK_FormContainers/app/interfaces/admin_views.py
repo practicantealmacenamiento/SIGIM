@@ -1,98 +1,75 @@
+"""Vistas administrativas soportadas por servicios de aplicacion."""
+
 from __future__ import annotations
 
-from typing import Optional, List, Tuple
-from django.db import transaction
-from django.contrib.auth import get_user_model
-from django.contrib.auth.hashers import make_password
-from django.db.models import Count, Prefetch, Q, F, Max
+from typing import Optional
 
-from rest_framework import status, viewsets, mixins, serializers
-from rest_framework.permissions import IsAdminUser
-from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+
+from rest_framework import status, serializers, viewsets
 from rest_framework.pagination import PageNumberPagination
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
+from rest_framework.permissions import IsAdminUser
+from rest_framework.request import Request
+from rest_framework.response import Response
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 
-# Autenticación unificada (headers: Authorization: Bearer|Token <key>)
 from .auth import BearerOrTokenAuthentication
 
-# Infraestructura (modelos + serializers manuales, NO ModelSerializer)
-from app.infrastructure.models import Questionnaire, Question, Choice, Actor
+from app.application.services.admin_services import (
+    AdminActorService,
+    AdminQuestionnaireService,
+    AdminUserService,
+)
+from app.infrastructure.models import Actor, Questionnaire
 from app.infrastructure.serializers import (
     ActorModelSerializer,
     QuestionnaireListItemSerializer,
     QuestionnaireModelSerializer,
 )
 
-# =========================================================
-# Utilidades internas de validación/normalización
-# =========================================================
-def _validate_question_type(t: Optional[str]) -> str:
-    """
-    Garantiza que el tipo de pregunta sea válido según el catálogo del modelo.
-    Fallback a 'text' si viene vacío o no permitido.
-    """
-    allowed = {k for (k, _) in Question.TYPE_CHOICES}
-    t = (t or "text").strip()
-    return t if t in allowed else "text"
 
-
-def _normalize_semantic(s) -> str:
-    """
-    Normaliza la etiqueta semántica:
-    - None, '', 'none' -> 'none'
-    - Cualquier otro valor fuera del catálogo -> 'none'
-    Nunca persistimos NULL en DB; siempre 'none'.
-    """
-    if s is None:
-        return "none"
-    s = (str(s) or "").strip().lower()
-    if s in ("", "none"):
-        return "none"
-    allowed = {k for (k, _) in Question.SEMANTIC_CHOICES}
-    return s if s in allowed else "none"
-
-
-# =========================================================
-# Paginación admin (configurable vía ?page_size=)
-# =========================================================
 class AdminPageNumberPagination(PageNumberPagination):
+    page_size = 20
     page_size_query_param = "page_size"
     max_page_size = 200
-    page_size = 20  # default
 
 
-# =========================================================
-# ADMIN — ACTORES (CRUD simple de catálogo)
-# =========================================================
-class AdminActorViewSet(viewsets.ViewSet):
-    """
-    Gestión de actores (proveedores/transportistas/receptores) para admin.
-
-    ✔ Serializadores manuales (sin ModelSerializer)
-    ✔ Sin lógica de dominio/negocio en la vista
-    ✔ Filtros por nombre/documento y tipo
-    """
+class AdminAuthMixin:
     authentication_classes = [BearerOrTokenAuthentication]
     permission_classes = [IsAdminUser]
+    pagination_class = AdminPageNumberPagination
 
-    def _apply_filters(self, qs, request):
-        raw_search = (
-            request.query_params.get("search")
-            or request.query_params.get("q")
-            or request.query_params.get("term")
-            or ""
-        ).strip()
-        tipo = (request.query_params.get("tipo") or "").strip().upper()
+    @property
+    def factory(self):
+        from app.infrastructure.factories import get_service_factory
 
-        if raw_search:
-            qs = qs.filter(Q(nombre__icontains=raw_search) | Q(documento__icontains=raw_search))
+        return get_service_factory()
 
-        if tipo:
-            valid_tipos = {c[0] for c in Actor.Tipo.choices}
-            if tipo in valid_tipos:
-                qs = qs.filter(tipo=tipo)
+    def paginate_queryset(self, request, queryset, *, serializer_cls, context: Optional[dict] = None):
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, request)
+        if page is None:
+            return Response(serializer_cls(queryset, many=True, context=context).data)
+        data = serializer_cls(page, many=True, context=context).data
+        return paginator.get_paginated_response(data)
 
-        return qs
+    def actor_service(self) -> AdminActorService:
+        return self.factory.create_admin_actor_service()
+
+    def user_service(self) -> AdminUserService:
+        return self.factory.create_admin_user_service()
+
+    def questionnaire_service(self) -> AdminQuestionnaireService:
+        return self.factory.create_admin_questionnaire_service()
+
+
+# ---------------------------------------------------------------------------
+# Actors
+# ---------------------------------------------------------------------------
+
+
+class AdminActorViewSet(AdminAuthMixin, viewsets.ViewSet):
+    """Gestion del catalogo de actores para administradores."""
 
     @extend_schema(
         tags=["admin/actors"],
@@ -105,80 +82,43 @@ class AdminActorViewSet(viewsets.ViewSet):
         ],
         responses={200: OpenApiResponse(description="OK")},
     )
-    def list(self, request):
-        qs = Actor.objects.all().order_by("nombre")
-        qs = self._apply_filters(qs, request)
-        paginator = AdminPageNumberPagination()
-        page = paginator.paginate_queryset(qs, request)
-        data = ActorModelSerializer(page, many=True).data
-        return paginator.get_paginated_response(data)
+    def list(self, request: Request):
+        params = request.query_params
+        qs = self.actor_service().filtered_queryset(
+            search=params.get("search") or params.get("q") or params.get("term") or "",
+            tipo=params.get("tipo") or "",
+        )
+        return self.paginate_queryset(request, qs, serializer_cls=ActorModelSerializer)
 
     @extend_schema(tags=["admin/actors"], summary="Detalle actor")
-    def retrieve(self, request, pk=None):
-        try:
-            obj = Actor.objects.get(pk=pk)
-        except Actor.DoesNotExist:
-            return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
-        return Response(ActorModelSerializer(obj).data)
+    def retrieve(self, request: Request, pk: str = None):
+        actor = get_object_or_404(Actor, pk=pk)
+        return Response(ActorModelSerializer(actor).data)
 
     @extend_schema(tags=["admin/actors"], summary="Crear actor")
-    def create(self, request):
-        # Usamos el serializer manual como validador de estructura básica.
-        ser = ActorModelSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        data = getattr(ser, "validated_data", request.data)
-
-        obj = Actor.objects.create(
-            nombre=data.get("nombre") or request.data.get("nombre") or "",
-            tipo=data.get("tipo") or request.data.get("tipo") or Actor.Tipo.RECEPTOR,
-            documento=data.get("documento") or request.data.get("documento") or request.data.get("nit"),
-            activo=bool(data.get("activo", True)),
-        )
-        return Response(ActorModelSerializer(obj).data, status=status.HTTP_201_CREATED)
+    def create(self, request: Request):
+        actor = self.actor_service().create(request.data)
+        return Response(ActorModelSerializer(actor).data, status=status.HTTP_201_CREATED)
 
     @extend_schema(tags=["admin/actors"], summary="Actualizar parcialmente actor (PATCH)")
-    def partial_update(self, request, pk=None):
-        try:
-            obj = Actor.objects.get(pk=pk)
-        except Actor.DoesNotExist:
-            return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
-
-        # Campos opcionales
-        nombre = request.data.get("nombre", None)
-        tipo = request.data.get("tipo", None)
-        documento = request.data.get("documento", request.data.get("nit", None))
-        activo = request.data.get("activo", None)
-
-        if nombre is not None:
-            obj.nombre = nombre
-        if tipo is not None:
-            obj.tipo = tipo
-        if documento is not None:
-            obj.documento = documento
-        if activo is not None:
-            obj.activo = bool(activo)
-
-        obj.save()
-        return Response(ActorModelSerializer(obj).data)
+    def partial_update(self, request: Request, pk: str = None):
+        actor = get_object_or_404(Actor, pk=pk)
+        updated = self.actor_service().update(actor, request.data)
+        return Response(ActorModelSerializer(updated).data)
 
     @extend_schema(tags=["admin/actors"], summary="Eliminar actor")
-    def destroy(self, request, pk=None):
-        try:
-            obj = Actor.objects.get(pk=pk)
-        except Actor.DoesNotExist:
-            return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
-        obj.delete()
+    def destroy(self, request: Request, pk: str = None):
+        actor = get_object_or_404(Actor, pk=pk)
+        self.actor_service().delete(actor)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-# =========================================================
-# ADMIN — USERS (utilidad operativa básica)
-# =========================================================
+# ---------------------------------------------------------------------------
+# Users
+# ---------------------------------------------------------------------------
+
+
 class AdminUserSerializer(serializers.Serializer):
-    """
-    Serializer manual (sin ModelSerializer) para exponer/crear/actualizar usuarios.
-    No implementa lógica de negocio; solo mapea y encripta password al crear/actualizar.
-    """
     id = serializers.IntegerField(read_only=True)
     username = serializers.CharField()
     email = serializers.EmailField(required=False, allow_blank=True)
@@ -188,159 +128,69 @@ class AdminUserSerializer(serializers.Serializer):
     is_active = serializers.BooleanField(required=False)
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
-    def create(self, validated):
-        User = get_user_model()
-        pwd = validated.pop("password", None)
-        if pwd:
-            validated["password"] = make_password(pwd)
-        return User.objects.create(**validated)
 
-    def update(self, instance, validated):
-        pwd = validated.pop("password", None)
-        for k, v in validated.items():
-            setattr(instance, k, v)
-        if pwd:
-            instance.password = make_password(pwd)
-        instance.save()
-        return instance
-
-
-class AdminUserViewSet(viewsets.ViewSet):
-    """
-    CRUD mínimo de usuarios para administración.
-    """
-    authentication_classes = [BearerOrTokenAuthentication]
-    permission_classes = [IsAdminUser]
+class AdminUserViewSet(AdminAuthMixin, viewsets.ViewSet):
+    """CRUD minimo de usuarios para administracion."""
 
     @extend_schema(tags=["admin/users"], summary="Listar usuarios")
-    def list(self, request):
-        User = get_user_model()
-        return Response(AdminUserSerializer(User.objects.all(), many=True).data)
+    def list(self, request: Request):
+        users = self.user_service().list_all()
+        return Response(AdminUserSerializer(users, many=True).data)
 
     @extend_schema(tags=["admin/users"], summary="Detalle usuario")
-    def retrieve(self, request, pk=None):
-        User = get_user_model()
-        try:
-            obj = User.objects.get(pk=pk)
-        except User.DoesNotExist:
-            return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
-        return Response(AdminUserSerializer(obj).data)
+    def retrieve(self, request: Request, pk: str = None):
+        user = get_object_or_404(self.user_service().list_all(), pk=pk)
+        return Response(AdminUserSerializer(user).data)
 
     @extend_schema(tags=["admin/users"], summary="Crear usuario")
-    def create(self, request):
-        ser = AdminUserSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        instance = ser.save()
-        return Response(AdminUserSerializer(instance).data, status=status.HTTP_201_CREATED)
+    def create(self, request: Request):
+        serializer = AdminUserSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = self.user_service().create(serializer.validated_data)
+        return Response(AdminUserSerializer(user).data, status=status.HTTP_201_CREATED)
 
     @extend_schema(tags=["admin/users"], summary="Actualizar usuario (PUT)")
-    def update(self, request, pk=None):
-        User = get_user_model()
-        try:
-            obj = User.objects.get(pk=pk)
-        except User.DoesNotExist:
-            return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
-        ser = AdminUserSerializer(obj, data=request.data)
-        ser.is_valid(raise_exception=True)
-        instance = ser.save()
-        return Response(AdminUserSerializer(instance).data)
+    def update(self, request: Request, pk: str = None):
+        serializer = AdminUserSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = get_object_or_404(self.user_service().list_all(), pk=pk)
+        updated = self.user_service().update(user, serializer.validated_data, partial=False)
+        return Response(AdminUserSerializer(updated).data)
 
     @extend_schema(tags=["admin/users"], summary="Actualizar usuario (PATCH)")
-    def partial_update(self, request, pk=None):
-        User = get_user_model()
-        try:
-            obj = User.objects.get(pk=pk)
-        except User.DoesNotExist:
-            return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
-        ser = AdminUserSerializer(obj, data=request.data, partial=True)
-        ser.is_valid(raise_exception=True)
-        instance = ser.save()
-        return Response(AdminUserSerializer(instance).data)
+    def partial_update(self, request: Request, pk: str = None):
+        serializer = AdminUserSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        user = get_object_or_404(self.user_service().list_all(), pk=pk)
+        updated = self.user_service().update(user, serializer.validated_data, partial=True)
+        return Response(AdminUserSerializer(updated).data)
 
     @extend_schema(tags=["admin/users"], summary="Eliminar usuario")
-    def destroy(self, request, pk=None):
-        User = get_user_model()
-        try:
-            obj = User.objects.get(pk=pk)
-        except User.DoesNotExist:
-            return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
-        obj.delete()
+    def destroy(self, request: Request, pk: str = None):
+        user = get_object_or_404(self.user_service().list_all(), pk=pk)
+        self.user_service().delete(user)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-# =========================================================
-# ADMIN — CUESTIONARIOS (lista/detalle + create/update parcial)
-# =========================================================
-class AdminQuestionnaireViewSet(mixins.ListModelMixin,
-                                mixins.RetrieveModelMixin,
-                                viewsets.GenericViewSet):
-    """
-    CRUD administrativo de cuestionarios con preguntas/opciones.
+# ---------------------------------------------------------------------------
+# Questionnaires
+# ---------------------------------------------------------------------------
 
-    ✔ PUT/PATCH tratados como parciales (no obligamos a mandar todo)
-    ✔ Sin lógica de negocio (sólo consistencia/orden)
-    ✔ SHIFT “en dos fases” con OFFSET grande para evitar colisiones en
-      UNIQUE(questionnaire_id, order) al insertar o mover preguntas
-    ✔ `semantic_tag` nunca se guarda como NULL (normalización a 'none')
-    """
-    authentication_classes = [BearerOrTokenAuthentication]
-    permission_classes = [IsAdminUser]
 
-    # OFFSET grande para el algoritmo de reordenamiento a prueba de UNIQUE
-    BIG_OFFSET = 1_000_000
+class AdminQuestionnaireViewSet(AdminAuthMixin, viewsets.ViewSet):
+    """CRUD administrativo de cuestionarios delegando la logica a servicios."""
 
-    # ---------- Helper de reordenamiento seguro ----------
-    def _shift_range(
-        self,
-        *,
-        qn: Questionnaire,
-        start: int,
-        end: Optional[int],
-        direction: str,
-        exclude_id: Optional[str] = None,
-    ) -> None:
-        """
-        Desplaza un bloque de preguntas [start..end] en +1 ('up') o -1 ('down').
-        Si `end` es None, aplica a [start..∞).
-        Implementa DOS FASES con OFFSET grande (BIG_OFFSET) para no violar
-        la constraint UNIQUE(questionnaire_id, order).
+    def _handle_service_error(self, exc: ValueError) -> Response:
+        mapping = {
+            "title_required": {"title": "El titulo es obligatorio."},
+            "title_blank": {"title": "El titulo no puede estar vacio."},
+            "version_blank": {"version": "La version no puede estar vacia."},
+            "timezone_blank": {"timezone": "La zona horaria no puede estar vacia."},
+            "question_text_blank": {"questions": "Cada pregunta debe tener texto."},
+            "choice_text_blank": {"choices": "Cada opcion debe tener texto."},
+        }
+        return Response(mapping.get(str(exc), {"detail": str(exc)}), status=status.HTTP_400_BAD_REQUEST)
 
-        Ejemplo (subir):
-          1) alejamos: order = order + OFF
-          2) acercamos: order = order - (OFF - 1)  -> neto +1
-
-        Ejemplo (bajar):
-          1) alejamos: order = order + OFF
-          2) acercamos: order = order - (OFF + 1)  -> neto -1
-        """
-        qs = Question.objects.filter(questionnaire=qn, order__gte=start)
-        if end is not None:
-            qs = qs.filter(order__lte=end)
-        if exclude_id:
-            qs = qs.exclude(id=exclude_id)
-
-        if not qs.exists():
-            return
-
-        OFF = self.BIG_OFFSET
-        # Fase 1: alejar
-        qs.update(order=F("order") + OFF)
-        # Fase 2: establecer el valor final neto
-        if direction == "up":
-            qs.update(order=F("order") - (OFF - 1))
-        else:
-            qs.update(order=F("order") - (OFF + 1))
-
-    # ---------- Queryset base (lista) ----------
-    def get_queryset(self):
-        return (
-            Questionnaire.objects
-            .annotate(questions_count=Count("questions"))
-            .only("id", "title", "version", "timezone")
-            .order_by("title")
-        )
-
-    # ---------- Listar ----------
     @extend_schema(
         tags=["admin/questionnaires"],
         summary="Listar cuestionarios (admin)",
@@ -351,339 +201,61 @@ class AdminQuestionnaireViewSet(mixins.ListModelMixin,
         ],
         responses={200: QuestionnaireListItemSerializer(many=True)},
     )
-    def list(self, request, *args, **kwargs):
-        qs = self.get_queryset()
-        term = (request.query_params.get("search") or "").strip()
-        if term:
-            qs = qs.filter(Q(title__icontains=term) | Q(version__icontains=term))
-        paginator = AdminPageNumberPagination()
-        page = paginator.paginate_queryset(qs, request)
-        data = QuestionnaireListItemSerializer(page, many=True).data
-        return paginator.get_paginated_response(data)
+    def list(self, request: Request):
+        qs = self.questionnaire_service().filtered_queryset(search=request.query_params.get("search", ""))
+        return self.paginate_queryset(request, qs, serializer_cls=QuestionnaireListItemSerializer)
 
-    # ---------- Detalle ----------
-    @extend_schema(
-        tags=["admin/questionnaires"],
-        summary="Detalle de un cuestionario (admin)",
-        responses={200: QuestionnaireModelSerializer},
-    )
-    def retrieve(self, request, pk=None):
-        qn = (
-            Questionnaire.objects
-            .filter(pk=pk)
-            .prefetch_related(
-                Prefetch(
-                    "questions",
-                    queryset=(
-                        Question.objects
-                        .order_by("order")
-                        .prefetch_related(
-                            Prefetch(
-                                "choices",
-                                queryset=Choice.objects.select_related("branch_to").order_by("text")
-                            )
-                        )
-                    )
-                )
-            )
-            .first()
-        )
+    @extend_schema(tags=["admin/questionnaires"], summary="Detalle de cuestionario", responses={200: QuestionnaireModelSerializer})
+    def retrieve(self, request: Request, pk: str = None):
+        qn = self.questionnaire_service().retrieve(pk)
         if not qn:
             return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
         return Response(QuestionnaireModelSerializer(qn).data)
 
-    # ---------- Crear ----------
     @extend_schema(
         tags=["admin/questionnaires"],
-        summary="Crear cuestionario (admin)",
+        summary="Crear cuestionario",
         request=serializers.DictField,
-        responses={201: QuestionnaireModelSerializer, 400: OpenApiResponse(description="Error de validación")},
+        responses={201: QuestionnaireModelSerializer, 400: OpenApiResponse(description="Error de validacion")},
     )
-    @transaction.atomic
-    def create(self, request, *args, **kwargs):
-        payload = request.data or {}
-        title = (payload.get("title") or "").strip()
-        version = (payload.get("version") or "v1").strip()
-        timezone = (payload.get("timezone") or "America/Bogota").strip()
-
-        if not title:
-            return Response({"title": "El título es obligatorio."}, status=400)
-
-        qn = Questionnaire.objects.create(title=title, version=version or "v1", timezone=timezone or "America/Bogota")
-
-        # Preguntas opcionales en la carga inicial
-        if isinstance(payload.get("questions"), list):
-            branch_links: List[Tuple[Choice, Optional[str]]] = []
-
-            for idx, qd in enumerate(payload["questions"]):
-                text = (qd.get("text") or "").strip()
-                if not text:
-                    transaction.set_rollback(True)
-                    return Response({"questions": f"La pregunta #{idx+1} requiere 'text'."}, status=400)
-
-                qtype = _validate_question_type(qd.get("type"))
-                required = bool(qd.get("required", False))
-                file_mode = (qd.get("file_mode") or "image_only").strip()
-                semantic_tag = _normalize_semantic(qd.get("semantic_tag"))
-
-                # Orden seguro: si viene order, desplazamos >= order; si no, max+1
-                incoming_order = qd.get("order")
-                try:
-                    new_order = int(incoming_order) if incoming_order is not None else None
-                except Exception:
-                    new_order = None
-
-                if new_order is None:
-                    max_order = qn.questions.aggregate(m=Max("order"))["m"]
-                    safe_order = (max_order if max_order is not None else -1) + 1
-                else:
-                    self._shift_range(qn=qn, start=new_order, end=None, direction="up")
-                    safe_order = new_order
-
-                qobj = Question.objects.create(
-                    questionnaire=qn,
-                    text=text,
-                    type=qtype,
-                    required=required,
-                    order=safe_order,
-                    file_mode=file_mode,
-                    semantic_tag=semantic_tag,
-                )
-
-                # Opciones (si vienen)
-                if isinstance(qd.get("choices"), list):
-                    for cd in qd["choices"]:
-                        ctext = (cd.get("text") or "").strip()
-                        if not ctext:
-                            transaction.set_rollback(True)
-                            return Response({"choices": "Cada opción nueva debe tener 'text'."}, status=400)
-                        branch_to = (cd.get("branch_to") or "").strip() or None
-                        cobj = Choice.objects.create(question=qobj, text=ctext, branch_to=None)
-                        branch_links.append((cobj, branch_to))
-
-            # Resolver branch_to cuando todas las preguntas existen
-            questions_index = {str(q.id): q for q in Questionnaire.objects.get(pk=qn.id).questions.all()}
-            for cobj, target in branch_links:
-                if target and target in questions_index:
-                    cobj.branch_to = questions_index[target]
-                    cobj.save()
-
-        # Respuesta fresca
-        fresh = (
-            Questionnaire.objects.filter(pk=qn.id)
-            .prefetch_related(
-                Prefetch(
-                    "questions",
-                    queryset=Question.objects.order_by("order").prefetch_related(
-                        Prefetch("choices", queryset=Choice.objects.select_related("branch_to").order_by("text"))
-                    ),
-                )
-            ).first()
-        )
-        return Response(QuestionnaireModelSerializer(fresh).data, status=201)
-
-    # ---------- Update parcial (PUT/PATCH tratan igual: parciales) ----------
-    @extend_schema(
-        tags=["admin/questionnaires"], summary="Actualizar (PUT parcial)", request=serializers.DictField,
-        responses={200: QuestionnaireModelSerializer, 400: OpenApiResponse(description="Error de validación")}
-    )
-    def update(self, request, pk=None, *args, **kwargs):
-        return self._upsert(pk=pk, payload=request.data, is_partial=True)
+    def create(self, request: Request):
+        service = self.questionnaire_service()
+        try:
+            qn = service.create(request.data or {})
+        except ValueError as exc:
+            return self._handle_service_error(exc)
+        return Response(QuestionnaireModelSerializer(qn).data, status=status.HTTP_201_CREATED)
 
     @extend_schema(
-        tags=["admin/questionnaires"], summary="Actualizar (PATCH)", request=serializers.DictField,
-        responses={200: QuestionnaireModelSerializer, 400: OpenApiResponse(description="Error de validación")}
+        tags=["admin/questionnaires"],
+        summary="Actualizar cuestionario (PUT)",
+        request=serializers.DictField,
+        responses={200: QuestionnaireModelSerializer, 400: OpenApiResponse(description="Error de validacion")},
     )
-    def partial_update(self, request, pk=None, *args, **kwargs):
+    def update(self, request: Request, pk: str = None):
+        return self._upsert(pk=pk, payload=request.data, is_partial=False)
+
+    @extend_schema(
+        tags=["admin/questionnaires"],
+        summary="Actualizar cuestionario (PATCH)",
+        request=serializers.DictField,
+        responses={200: QuestionnaireModelSerializer, 400: OpenApiResponse(description="Error de validacion")},
+    )
+    def partial_update(self, request: Request, pk: str = None):
         return self._upsert(pk=pk, payload=request.data, is_partial=True)
 
     @extend_schema(tags=["admin/questionnaires"], summary="Eliminar", responses={204: OpenApiResponse(description="OK")})
-    def destroy(self, request, pk=None):
+    def destroy(self, request: Request, pk: str = None):
+        questionnaire = get_object_or_404(Questionnaire, pk=pk)
+        self.questionnaire_service().delete(questionnaire)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def _upsert(self, *, pk: str, payload: dict, is_partial: bool):
+        service = self.questionnaire_service()
         try:
-            obj = Questionnaire.objects.get(pk=pk)
+            qn = service.update(questionnaire_id=pk, payload=payload or {}, is_partial=is_partial)
         except Questionnaire.DoesNotExist:
-            return Response({"detail": "No encontrado."}, status=404)
-        obj.delete()
-        return Response(status=204)
-
-    # =====================================================
-    #   Upsert con resolución de orden (SHIFT en dos fases)
-    # =====================================================
-    @transaction.atomic
-    def _upsert(self, *, pk: str, payload: dict, is_partial: bool) -> Response:
-        qn = (
-            Questionnaire.objects.filter(pk=pk)
-            .prefetch_related(Prefetch("questions", queryset=Question.objects.prefetch_related("choices").order_by("order")))
-            .first()
-        )
-        if not qn:
-            return Response({"detail": "No encontrado."}, status=404)
-
-        # ---- Metadatos sólo si vienen (PUT/PATCH parciales)
-        if "title" in payload:
-            title = (payload.get("title") or "").strip()
-            if not title:
-                return Response({"title": "El título no puede estar vacío."}, status=400)
-            qn.title = title
-        if "version" in payload:
-            version = (payload.get("version") or "").strip()
-            if not version:
-                return Response({"version": "La versión no puede estar vacía."}, status=400)
-            qn.version = version
-        if "timezone" in payload:
-            tz = (payload.get("timezone") or "").strip()
-            if not tz:
-                return Response({"timezone": "La zona horaria no puede estar vacía."}, status=400)
-            qn.timezone = tz
-        qn.save()
-
-        # ---- Preguntas si vienen como lista
-        if "questions" in payload and isinstance(payload.get("questions"), list):
-            existing_qs = {str(q.id): q for q in qn.questions.all()}
-            seen_qids: set[str] = set()
-            branch_links: List[Tuple[Choice, Optional[str]]] = []
-
-            for qd in payload["questions"]:
-                qid = (qd.get("id") or "").strip() or None
-
-                # Presencias (para PUT/PATCH parciales)
-                text_present = "text" in qd
-                type_present = "type" in qd
-                req_present = "required" in qd
-                order_present = "order" in qd
-                sem_present = "semantic_tag" in qd
-                fm_present = "file_mode" in qd
-
-                raw_text = qd.get("text")
-                text = (raw_text if raw_text is not None else "").strip()
-                qtype = _validate_question_type(qd.get("type") if type_present else None)
-                required = bool(qd.get("required")) if req_present else None
-                semantic_tag = _normalize_semantic(qd.get("semantic_tag") if sem_present else None)
-                file_mode = (qd.get("file_mode") or "").strip() if fm_present else None
-
-                # Orden entrante -> intentar mover con SHIFT si cambia
-                new_order: Optional[int] = None
-                if order_present:
-                    try:
-                        new_order = int(qd.get("order"))
-                    except Exception:
-                        new_order = None
-
-                if qid and qid in existing_qs:
-                    # ===== UPDATE existente =====
-                    qobj = existing_qs[qid]
-                    old_order = qobj.order
-
-                    if text_present and raw_text is not None:
-                        if not (is_partial and text == ""):
-                            if text == "":
-                                return Response({"questions": "Cada pregunta debe tener texto."}, status=400)
-                            qobj.text = text
-                    if type_present:
-                        qobj.type = qtype
-                    if req_present:
-                        qobj.required = bool(required)
-                    if sem_present:
-                        qobj.semantic_tag = semantic_tag
-                    if fm_present:
-                        qobj.file_mode = file_mode or "image_only"
-
-                    # Si cambia la posición, desplazamos bloque afectado
-                    if new_order is not None and new_order != old_order:
-                        if new_order < old_order:
-                            # Sube: incrementa [new_order .. old_order-1]
-                            self._shift_range(qn=qn, start=new_order, end=old_order - 1, direction="up", exclude_id=qobj.id)
-                        else:
-                            # Baja: decrementa [old_order+1 .. new_order]
-                            self._shift_range(qn=qn, start=old_order + 1, end=new_order, direction="down", exclude_id=qobj.id)
-                        qobj.order = new_order
-
-                    qobj.save()
-
-                else:
-                    # ===== CREATE nueva =====
-                    if text == "":
-                        return Response({"questions": "Cada pregunta nueva debe tener 'text'."}, status=400)
-
-                    # Determinar order seguro
-                    if new_order is None:
-                        max_order = qn.questions.aggregate(m=Max("order"))["m"]
-                        safe_order = (max_order if max_order is not None else -1) + 1
-                    else:
-                        self._shift_range(qn=qn, start=new_order, end=None, direction="up")
-                        safe_order = new_order
-
-                    qobj = Question.objects.create(
-                        questionnaire=qn,
-                        text=text,
-                        type=qtype,
-                        required=bool(required) if req_present else False,
-                        order=safe_order,
-                        file_mode=(file_mode or "image_only"),
-                        semantic_tag=(semantic_tag or "none"),
-                    )
-                    qid = str(qobj.id)
-
-                seen_qids.add(qid)
-
-                # ---- Opciones si vienen como lista
-                if "choices" in qd and isinstance(qd.get("choices"), list):
-                    existing_cs = {str(c.id): c for c in qobj.choices.all()}
-                    seen_cids: set[str] = set()
-
-                    for cd in qd["choices"]:
-                        cid = (cd.get("id") or "").strip() or None
-                        ctext_present = "text" in cd
-                        raw_ctext = cd.get("text")
-                        ctext = (raw_ctext if raw_ctext is not None else "").strip()
-                        branch_to = (cd.get("branch_to") or "").strip() or None
-
-                        if cid and cid in existing_cs:
-                            cobj = existing_cs[cid]
-                            if ctext_present and raw_ctext is not None:
-                                if not (is_partial and ctext == ""):
-                                    if ctext == "":
-                                        return Response({"choices": "Cada opción debe tener texto."}, status=400)
-                                    cobj.text = ctext
-                            # branch_to se resuelve luego de tener todas las preguntas
-                            cobj.branch_to = None
-                            cobj.save()
-                        else:
-                            if ctext == "":
-                                return Response({"choices": "Cada opción nueva debe tener 'text'."}, status=400)
-                            cobj = Choice.objects.create(question=qobj, text=ctext, branch_to=None)
-                            cid = str(cobj.id)
-
-                        seen_cids.add(cid)
-                        branch_links.append((cobj, branch_to))
-
-                    # Eliminar opciones no vistas (cuando mandas lista completa)
-                    for cid, cobj in list(existing_cs.items()):
-                        if cid not in seen_cids:
-                            cobj.delete()
-
-            # Eliminar preguntas no vistas (cuando mandas lista completa)
-            for qid, qobj in list(existing_qs.items()):
-                if qid not in seen_qids:
-                    qobj.delete()
-
-            # Resolver branch_to (ya existen todas)
-            questions_index = {str(q.id): q for q in Questionnaire.objects.get(pk=qn.id).questions.all()}
-            for cobj, target in branch_links:
-                if target and target in questions_index:
-                    cobj.branch_to = questions_index[target]
-                    cobj.save()
-
-        # Responder con el detalle fresco
-        fresh = (
-            Questionnaire.objects.filter(pk=qn.id)
-            .prefetch_related(
-                Prefetch(
-                    "questions",
-                    queryset=Question.objects.order_by("order").prefetch_related(
-                        Prefetch("choices", queryset=Choice.objects.select_related("branch_to").order_by("text"))
-                    ),
-                )
-            ).first()
-        )
-        return Response(QuestionnaireModelSerializer(fresh).data, status=200)
+            return Response({"detail": "No encontrado."}, status=status.HTTP_404_NOT_FOUND)
+        except ValueError as exc:
+            return self._handle_service_error(exc)
+        return Response(QuestionnaireModelSerializer(qn).data)

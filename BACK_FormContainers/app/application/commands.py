@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Comandos (DTOs inmutables) para la capa de aplicación.
 

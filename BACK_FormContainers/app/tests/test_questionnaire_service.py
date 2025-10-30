@@ -22,13 +22,13 @@ from app.domain.exceptions import (
     ValidationError, 
     BusinessRuleViolationError
 )
-from app.domain.repositories import (
+from app.domain.ports.repositories import (
     AnswerRepository,
     SubmissionRepository, 
     QuestionRepository,
     ChoiceRepository
 )
-from app.domain.ports import FileStorage
+from app.domain.ports.external_ports import FileStorage
 
 
 class TestQuestionnaireService(unittest.TestCase):
@@ -50,6 +50,15 @@ class TestQuestionnaireService(unittest.TestCase):
             storage=self.mock_storage
         )
 
+    def _make_question(self, **attrs):
+        """Crea un Mock de question con valores por defecto seguros."""
+        question = Mock()
+        question.semantic_tag = attrs.pop("semantic_tag", "none")
+        question.file_mode = attrs.pop("file_mode", "")
+        for key, value in attrs.items():
+            setattr(question, key, value)
+        return question
+
     def test_save_and_advance_text_answer_success(self):
         """Debe guardar respuesta de texto y avanzar correctamente."""
         # Arrange
@@ -69,10 +78,7 @@ class TestQuestionnaireService(unittest.TestCase):
         self.mock_submission_repo.get.return_value = mock_submission
         
         # Mock question
-        mock_question = Mock()
-        mock_question.id = question_id
-        mock_question.type = "text"
-        mock_question.required = False
+        mock_question = self._make_question(id=question_id, type="text", required=False)
         self.mock_question_repo.get.return_value = mock_question
         
         # Mock next question
@@ -125,10 +131,7 @@ class TestQuestionnaireService(unittest.TestCase):
         self.mock_submission_repo.get.return_value = mock_submission
         
         # Mock question
-        mock_question = Mock()
-        mock_question.id = question_id
-        mock_question.type = "choice"
-        mock_question.required = False
+        mock_question = self._make_question(id=question_id, type="choice", required=False)
         self.mock_question_repo.get.return_value = mock_question
         
         # Mock choice
@@ -178,11 +181,12 @@ class TestQuestionnaireService(unittest.TestCase):
         self.mock_submission_repo.get.return_value = mock_submission
         
         # Mock question (file type)
-        mock_question = Mock()
-        mock_question.id = question_id
-        mock_question.type = "file"
-        mock_question.file_mode = "image_ocr"
-        mock_question.required = False
+        mock_question = self._make_question(
+            id=question_id,
+            type="file",
+            required=False,
+            file_mode="image_ocr",
+        )
         self.mock_question_repo.get.return_value = mock_question
         
         # Mock storage
@@ -280,9 +284,7 @@ class TestQuestionnaireService(unittest.TestCase):
         mock_submission.id = submission_id
         self.mock_submission_repo.get.return_value = mock_submission
         
-        mock_question = Mock()
-        mock_question.id = question_id
-        mock_question.type = "choice"
+        mock_question = self._make_question(id=question_id, type="choice")
         self.mock_question_repo.get.return_value = mock_question
         
         # Mock choice doesn't exist
@@ -314,9 +316,7 @@ class TestQuestionnaireService(unittest.TestCase):
         mock_submission.id = submission_id
         self.mock_submission_repo.get.return_value = mock_submission
         
-        mock_question = Mock()
-        mock_question.id = question_id
-        mock_question.type = "choice"
+        mock_question = self._make_question(id=question_id, type="choice")
         self.mock_question_repo.get.return_value = mock_question
         
         # Mock choice belongs to different question
@@ -351,10 +351,7 @@ class TestQuestionnaireService(unittest.TestCase):
         self.mock_submission_repo.get.return_value = mock_submission
         
         # Mock question (text type - no files allowed)
-        mock_question = Mock()
-        mock_question.id = question_id
-        mock_question.type = "text"  # Text questions don't accept files
-        mock_question.required = False
+        mock_question = self._make_question(id=question_id, type="text", required=False)
         self.mock_question_repo.get.return_value = mock_question
         
         # Act & Assert
@@ -382,10 +379,7 @@ class TestQuestionnaireService(unittest.TestCase):
         self.mock_submission_repo.get.return_value = mock_submission
         
         # Mock required question
-        mock_question = Mock()
-        mock_question.id = question_id
-        mock_question.type = "text"
-        mock_question.required = True  # Required!
+        mock_question = self._make_question(id=question_id, type="text", required=True)
         self.mock_question_repo.get.return_value = mock_question
         
         # Act & Assert
@@ -416,11 +410,12 @@ class TestQuestionnaireService(unittest.TestCase):
         self.mock_submission_repo.get.return_value = mock_submission
         
         # Mock question (OCR mode - max 1 file)
-        mock_question = Mock()
-        mock_question.id = question_id
-        mock_question.type = "file"
-        mock_question.file_mode = "image_ocr"  # Max 1 file
-        mock_question.required = False
+        mock_question = self._make_question(
+            id=question_id,
+            type="file",
+            required=False,
+            file_mode="image_ocr",
+        )
         self.mock_question_repo.get.return_value = mock_question
         
         # Mock storage and answer
@@ -465,10 +460,7 @@ class TestQuestionnaireService(unittest.TestCase):
         self.mock_submission_repo.get.return_value = mock_submission
         
         # Mock question
-        mock_question = Mock()
-        mock_question.id = question_id
-        mock_question.type = "choice"
-        mock_question.required = False
+        mock_question = self._make_question(id=question_id, type="choice", required=False)
         self.mock_question_repo.get.return_value = mock_question
         
         # Mock choice with branching
@@ -514,10 +506,7 @@ class TestQuestionnaireService(unittest.TestCase):
         mock_submission.id = submission_id
         self.mock_submission_repo.get.return_value = mock_submission
         
-        mock_question = Mock()
-        mock_question.id = question_id
-        mock_question.type = "text"
-        mock_question.required = False
+        mock_question = self._make_question(id=question_id, type="text", required=False)
         self.mock_question_repo.get.return_value = mock_question
         
         # Mock saved answer and next question

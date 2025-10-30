@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Servicio de verificación OCR desacoplado del proveedor.
 
@@ -22,11 +21,11 @@ Notas:
 from __future__ import annotations
 
 # ── Stdlib ─────────────────────────────────────────────────────────────────────
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 # ── Puertos / Dominio ─────────────────────────────────────────────────────────
 from app.domain import rules  # canonical_semantic_tag + reglas
-from app.domain.ports import TextExtractorPort
+from app.domain.ports.external_ports import TextExtractorPort
 from app.domain.exceptions import (
     BusinessRuleViolationError,
     EntityNotFoundError,
